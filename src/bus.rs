@@ -7,6 +7,14 @@ impl Bus {
         Self { ram: [0; 2 ^ 32] }
     }
 
+    pub fn mem_read_byte(&mut self, addr: u32) -> u8 {
+        self.ram[addr as usize]
+    }
+
+    pub fn mem_write_byte(&mut self, addr: u32, val: u8) {
+        self.ram[addr as usize] = val;
+    }
+
     pub fn mem_read_word(&mut self, addr: u32) -> u32 {
         let addr = addr as usize;
         u32::from_le_bytes([
@@ -24,14 +32,6 @@ impl Bus {
         self.ram[addr + 1] = b1;
         self.ram[addr + 2] = b2;
         self.ram[addr + 3] = b3;
-    }
-
-    pub fn mem_read_byte(&mut self, addr: u32) -> u8 {
-        self.ram[addr as usize]
-    }
-
-    pub fn mem_write_byte(&mut self, addr: u32, val: u8) {
-        self.ram[addr as usize] = val;
     }
 
     pub fn mem_read_halfword(&mut self, addr: u32) -> u16 {

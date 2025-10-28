@@ -1,6 +1,5 @@
-use core::panic;
-
 use crate::bus::Bus;
+use crate::cop0::Cop0;
 
 pub struct Registers {
     registers: [u32; 32],
@@ -38,8 +37,26 @@ impl Registers {
     }
 }
 
+#[derive(PartialEq, Clone, Copy)]
+pub enum ExceptionType {
+    #[expect(unused)]
+    Interrupt, // External Interrupt
+    //TLBMod,              // TLB Modification
+    //TLBLoad,             // TLB Load
+    //TLBStore,            // TLB Store
+    AddressErrorLoad(u32),  // Address Error, data load or instruction fetch
+    AddressErrorStore(u32), // Address Error, data store
+    //BusErrorFetch,       // Bus error on instruction fetch
+    //BusErrorLoad,        // Bus error on data load/store
+    Syscall, // Syscall
+    Break,   // Breakpoint
+    //Reserved,            // Reserved Instruction
+    //CoprocessorUnusable, // Coprocessor Unusable
+    ArithmeticOverflow, // Arithmetic Overflow
+}
+
 pub struct Cpu {
-    // Thirty Two 32-bit registers in an array
+    cop0: Cop0,
     registers: Registers,
     bus: Bus,
 }
@@ -48,10 +65,57 @@ impl Cpu {
     pub fn new() -> Self {
         let registers = Registers::new();
         let bus = Bus::new();
-        Self { registers, bus }
+        let cop0 = Cop0::new();
+        Self {
+            cop0,
+            registers,
+            bus,
+        }
+    }
+
+    fn handle_exception(&mut self, exception: ExceptionType, in_delay_slot: bool) {
+        // Store PC in EPC register (unless currently in Branch Delay in which case store PC - 4)
+        if in_delay_slot {
+            self.cop0.epc = self.registers.program_counter - 4;
+            self.cop0.cause.set_branch_delay(true);
+        } else {
+            self.cop0.epc = self.registers.program_counter;
+            self.cop0.cause.set_branch_delay(false);
+        }
+
+        // Store exception code in Cause register
+        self.cop0.cause.set_exception_code(exception);
+
+        // Push previous interrupt/kernel bits and turn off interrupts and enable kernel mode
+        self.cop0.sr.push_interrupt();
+        self.cop0.sr.set_interrupt(false);
+        self.cop0.sr.set_kernel_mode(true);
+
+        // Set BadVaddr on Address Error Exception to the problematic address
+        match exception {
+            ExceptionType::AddressErrorLoad(addr) | ExceptionType::AddressErrorStore(addr) => {
+                self.cop0.badvaddr = addr;
+            }
+            _ => {} // do nothing
+        }
+
+        // Jump to Exception Vector. If BEV is set then 0xBFC00180, otherwise 0x80000080
+        if self.cop0.sr.bev_is_set() {
+            self.registers.program_counter = 0xBFC00180;
+        } else {
+            self.registers.program_counter = 0x80000080;
+        }
     }
 
     pub fn step_instruction(&mut self) {
+        if self.registers.program_counter % 4 != 0 {
+            self.handle_exception(
+                ExceptionType::AddressErrorLoad(self.registers.program_counter),
+                false,
+            );
+            return;
+        }
+
         let opcode = self.bus.mem_read_word(self.registers.program_counter);
 
         let (next_pc, in_delay_slot) = match self.registers.delayed_branch.take() {
@@ -59,12 +123,15 @@ impl Cpu {
             None => (self.registers.program_counter + 4, false),
         };
 
-        self.execute_opcode(opcode);
+        if let Some(exception) = self.execute_opcode(opcode) {
+            self.handle_exception(exception, in_delay_slot);
+            return;
+        }
 
         self.registers.program_counter = next_pc;
     }
 
-    fn execute_opcode(&mut self, opcode: u32) {
+    fn execute_opcode(&mut self, opcode: u32) -> Option<ExceptionType> {
         match opcode {
             // ADDI
             0x20000000..=0x20FFFFFF => {
@@ -72,10 +139,14 @@ impl Cpu {
                 let imm = (opcode & 0x0000FFFF) as i16;
                 let target = (opcode & 0x001F0000) >> 16;
 
-                self.registers.write(
-                    target,
-                    Cpu::add(self.registers.read(reg), (imm as i32) as u32),
-                );
+                let (sum, err) = Cpu::add(self.registers.read(reg), (imm as i32) as u32);
+                self.registers.write(target, sum);
+
+                if err {
+                    Some(ExceptionType::ArithmeticOverflow)
+                } else {
+                    None
+                }
             }
             // ADDIU
             0x21000000..=0x21FFFFFF => {
@@ -87,6 +158,8 @@ impl Cpu {
                     target,
                     Cpu::addu(self.registers.read(reg), (imm as i32) as u32),
                 );
+
+                None
             }
             // ANDI
             0x30000000..=0x33FFFFFF => {
@@ -96,6 +169,8 @@ impl Cpu {
 
                 self.registers
                     .write(target, self.registers.read(reg) & ((imm as i32) as u32));
+
+                None
             }
             // BEQ - Branch on equal
             0x10000000..=0x13000000 => {
@@ -108,6 +183,8 @@ impl Cpu {
                     self.registers.program_counter =
                         self.registers.program_counter.wrapping_add(offset as u32);
                 }
+
+                None
             }
             // BGEZ - Branch on greater than or equal to zero. Name = 0b00001
             // BGEZAL - Branch on greater than or equal to zero and link. Name = 0b10001
@@ -129,6 +206,8 @@ impl Cpu {
                     self.registers.program_counter =
                         self.registers.program_counter.wrapping_add(offset as u32);
                 }
+
+                None
             }
             // BGTZ - Branch on greater than or equal to zero
             0x1C000000..=0x1FFFFFFF => {
@@ -140,6 +219,8 @@ impl Cpu {
                     self.registers.program_counter =
                         self.registers.program_counter.wrapping_add(offset as u32);
                 }
+
+                None
             }
             // BNE
             0x14000000..=0x17FFFFFF => {
@@ -152,6 +233,8 @@ impl Cpu {
                     self.registers.program_counter =
                         self.registers.program_counter.wrapping_add(offset as u32);
                 }
+
+                None
             }
             // JUMP
             0x08000000..=0x0BFFFFFF => {
@@ -159,6 +242,8 @@ impl Cpu {
 
                 self.registers.program_counter =
                     (self.registers.program_counter & 0x0FFFFFFF) | target;
+
+                None
             }
             // JAL - Jump and Link
             0x0C000000..=0x0FFFFFFF => {
@@ -167,6 +252,8 @@ impl Cpu {
                 self.registers.registers[31] = self.registers.program_counter + 8;
                 self.registers.program_counter =
                     (self.registers.program_counter & 0x0FFFFFFF) | target;
+
+                None
             }
             // LB - Load Byte
             0x80000000..=0x83FFFFFF => {
@@ -177,6 +264,8 @@ impl Cpu {
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 let data = self.bus.mem_read_byte(addr) as i8;
                 self.registers.write(rt, data as i32 as u32);
+
+                None
             }
             // LBU - Load Byte Unsigned
             0x90000000..=0x93FFFFFF => {
@@ -187,6 +276,8 @@ impl Cpu {
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 self.registers
                     .write(rt, self.bus.mem_read_byte(addr) as u32);
+
+                None
             }
             // LH - Load Halfword
             0x84000000..=0x87FFFFFF => {
@@ -197,6 +288,8 @@ impl Cpu {
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 let halfword = self.bus.mem_read_halfword(addr) as i16;
                 self.registers.write(rt, halfword as i32 as u32);
+
+                None
             }
             // LHU - Load Halfword Unsigned
             0x94000000..=0x97FFFFFF => {
@@ -207,6 +300,8 @@ impl Cpu {
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 self.registers
                     .write(rt, self.bus.mem_read_halfword(addr) as u32);
+
+                None
             }
             // LUI - Load Upper Immediate
             0x3C000000..=0x3C1FFFFF => {
@@ -214,6 +309,8 @@ impl Cpu {
                 let imm = (opcode & 0x0000FFFF) << 16;
 
                 self.registers.write(target, imm);
+
+                None
             }
             // LW - Load Word
             0x8C000000..=0x8FFFFFFF => {
@@ -223,6 +320,8 @@ impl Cpu {
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 self.registers.write(rt, self.bus.mem_read_word(addr));
+
+                None
             }
             // LWL - Load Word Left
             0x88000000..=0x8BFFFFFF => {
@@ -250,7 +349,9 @@ impl Cpu {
                         .registers
                         .write(rt, u32::from_le_bytes([b3, r1, r2, r3])),
                     _ => panic!("Impossible"),
-                }
+                };
+
+                None
             }
             // LWR - Load Word Right
             0x98000000..=0x9BFFFFFF => {
@@ -278,7 +379,9 @@ impl Cpu {
                         .registers
                         .write(rt, u32::from_le_bytes([b0, b1, b2, b3])),
                     _ => panic!("Impossible"),
-                }
+                };
+
+                None
             }
             // ORI - Or Immediate
             0x34000000..=0x37FFFFFF => {
@@ -288,6 +391,8 @@ impl Cpu {
 
                 self.registers
                     .write(target, self.registers.read(source) | imm);
+
+                None
             }
             // SB - Store Byte
             0xA0000000..=0xA3FFFFFF => {
@@ -298,6 +403,8 @@ impl Cpu {
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 let byte = (self.registers.read(target) & 0x000000FF) as u8;
                 self.bus.mem_write_byte(addr, byte);
+
+                None
             }
             // SH - Store Halfword
             0xA4000000..=0xA7FFFFFF => {
@@ -308,6 +415,8 @@ impl Cpu {
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 let halfbyte = (self.registers.read(target) & 0x0000FFFF) as u16;
                 self.bus.mem_write_halfword(addr, halfbyte);
+
+                None
             }
             // SLTI - Set on Less Than Immediate
             0x28000000..=0x2BFFFFFF => {
@@ -320,6 +429,8 @@ impl Cpu {
                 } else {
                     self.registers.write(rt, 0);
                 }
+
+                None
             }
             // SLTIU
             0x2C000000..=0x2FFFFFFF => {
@@ -332,6 +443,8 @@ impl Cpu {
                 } else {
                     self.registers.write(rt, 0);
                 }
+
+                None
             }
             // SW - Store Word
             0xAC000000..=0xAFFFFFFF => {
@@ -341,6 +454,8 @@ impl Cpu {
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 self.bus.mem_write_word(addr, self.registers.read(rt));
+
+                None
             }
             // SWL - Store Word Left
             0xA8000000..=0xABFFFFFF => {
@@ -370,7 +485,9 @@ impl Cpu {
                         self.bus.ram[addr] = b0;
                     }
                     _ => panic!("Impossible"),
-                }
+                };
+
+                None
             }
             // SWR - Store Word Right
             0xB8000000..=0xBBFFFFFF => {
@@ -400,7 +517,9 @@ impl Cpu {
                         self.bus.ram[addr - 3] = b0;
                     }
                     _ => panic!("Impossible"),
-                }
+                };
+
+                None
             }
             // XORI
             0x38000000..=0x3BFFFFFF => {
@@ -409,17 +528,67 @@ impl Cpu {
                 let imm = opcode & 0x0000FFFF;
 
                 self.registers.write(rt, self.registers.read(rs) ^ imm);
+
+                None
             }
             // Coprocessor
             // CFC0 - Move Control From Coprocessor 0
-            
+            0x40400000..=0x405FFFFF => {
+                panic!("CFC is invalid for Coprocessor 0")
+            }
+            // CFC1 - Move Control From Coprocessor 1
+            0x44400000..=0x445FFFFF => {
+                panic!("No Coprocessor 1")
+            }
+            // CFC2 - Move Control From Coprocessor 2
+            0x48400000..=0x485FFFFF => {
+                todo!()
+            }
+            // CFC3 - Move Control From Coprocessor 3
+            0x4C400000..=0x4C5FFFFF => {
+                panic!("No Coprocessor 3")
+            }
+            // COP0 - Coprocessor Operation 0
+            // RFE - Return from Exception
+            0x42000010 => {
+                self.cop0.sr.pop_interrupt();
+                None
+            }
+            // COP1 - Coprocessor Operation 1
+            0x46000000..=0x47FFFFFF => {
+                panic!("No Coprocessor 1")
+            }
+            // COP2 - Coprocessor Operation 2
+            0x4A000000..=0x4BFFFFFF => {
+                todo!()
+            }
+            // COP3 - Coprocessor Operation 3
+            0x4E000000..=0x4FFFFFFF => {
+                panic!("No Coprocessor 3")
+            }
+            // CTC0 - Move Control To Coprocessor 0
+            0x40C00000..=0x40DFFFFF => {
+                panic!("CTC is invalid for Coprocessor 0")
+            }
+            // CTC1 - Move Control To Coprocessor 1
+            0x44C00000..=0x44DFFFFF => {
+                panic!("No Coprocessor 1")
+            }
+            // CTC2 - Move Control To Coprocessor 2
+            0x48C00000..=0x48DFFFFF => {
+                todo!()
+            }
+            // CTC3 - Move Control To Coprocessor 3
+            0x4CC00000..=0x4CDFFFFF => {
+                panic!("No Coprocessor 3")
+            }
             // LWC0 - Load Word to Coprocessor 0
             0xC0000000..=0xC3FFFFFF => {
-                todo!()
+                panic!("LWC is invalid for Coprocessor 0")
             }
             // LWC1 - Load Word to Coprocessor 1
             0xC4000000..=0xC7FFFFFF => {
-                todo!()
+                panic!("No Coprocessor 1")
             }
             // LWC2 - Load Word to Coprocessor 2
             0xC8000000..=0xCBFFFFFF => {
@@ -427,15 +596,20 @@ impl Cpu {
             }
             // LWC3 - Load Word to Coprocessor 3
             0xCC000000..=0xCFFFFFFF => {
-                todo!()
+                panic!("No Coprocessor 3")
             }
             // MFC0 - Move From Coprocessor 0
-            0x40000000..=0x401FFFFF => {
-                todo!()
+            0x40000000..=0x401FFFFF if opcode & 0x7FF == 0 => {
+                let rt = (opcode & 0x001F0000) >> 16;
+                let rd = (opcode & 0x0000F800) >> 11;
+
+                self.registers.write(rt, self.cop0.read_register(rd));
+
+                None
             }
             // MFC1 - Move From Coprocessor 1
             0x44000000..=0x441FFFFF => {
-                todo!()
+                panic!("No Coprocessor 1")
             }
             // MFC2 - Move From Coprocessor 2
             0x48000000..=0x481FFFFF => {
@@ -443,7 +617,7 @@ impl Cpu {
             }
             // MFC3 - Move From Coprocesor 3
             0x4C000000..=0x4C1FFFFF => {
-                todo!()
+                panic!("No Coprocessor 3")
             }
             // MTC0 - Move To Coprocessor 0
             0x40800000..=0x409FFFFF => {
@@ -451,7 +625,7 @@ impl Cpu {
             }
             // MTC1 - Move to Coprocessor 1
             0x44800000..=0x449FFFFF => {
-                todo!()
+                panic!("No Coprocessor 1")
             }
             // MTC2 - Move to Coprocessor 2
             0x48800000..=0x489FFFFF => {
@@ -459,7 +633,7 @@ impl Cpu {
             }
             // MTC3 - Move to Coprocessor 3
             0x4C800000..=0x4C9FFFFF => {
-                todo!()
+                panic!("No Coprocessor 3")
             }
             // SWC0 - Store Word from Coprocessor 0
             0xE0000000..=0xE3FFFFFF => {
@@ -467,7 +641,7 @@ impl Cpu {
             }
             // SWC1 - Store Word from Coprocessor 1
             0xE4000000..=0xE7FFFFFF => {
-                todo!()
+                panic!("No Coprocessor 1")
             }
             // SWC2 - Store Word from Coprocessor 2
             0xE8000000..=0xEBFFFFFF => {
@@ -475,7 +649,7 @@ impl Cpu {
             }
             // SWC3 - Store Word from Coprocessor 3
             0xEC000000..=0xEFFFFFFF => {
-                todo!()
+                panic!("No Coprocessor 3")
             }
             // Special
             // ADD
@@ -484,8 +658,14 @@ impl Cpu {
                 let reg2 = (opcode & 0x001F0000) >> 16;
                 let target = (opcode & 0x0000F800) >> 11;
 
-                let sum = Cpu::add(self.registers.read(reg1), self.registers.read(reg2));
+                let (sum, err) = Cpu::add(self.registers.read(reg1), self.registers.read(reg2));
                 self.registers.write(target, sum);
+
+                if err {
+                    Some(ExceptionType::ArithmeticOverflow)
+                } else {
+                    None
+                }
             }
             // ADDU
             op if op & 0xFC00003F == 0x00000021 => {
@@ -495,6 +675,8 @@ impl Cpu {
 
                 let sum = Cpu::addu(self.registers.read(reg1), self.registers.read(reg2));
                 self.registers.write(target, sum);
+
+                None
             }
             // AND
             op if op & 0xFC00003F == 0x00000024 => {
@@ -506,11 +688,11 @@ impl Cpu {
                     target,
                     self.registers.read(reg1) & self.registers.read(reg2),
                 );
+
+                None
             }
             // BREAK
-            op if op & 0xFC00003F == 0x0000000D => {
-                todo!()
-            }
+            op if op & 0xFC00003F == 0x0000000D => Some(ExceptionType::Break),
             // DIV
             op if op & 0xFC00003F == 0x0000001A => {
                 let reg1 = (opcode & 0x03E00000) >> 21;
@@ -524,6 +706,8 @@ impl Cpu {
                     self.registers.lo = (dividend / divisor) as u32;
                     self.registers.hi = (dividend % divisor) as u32;
                 }
+
+                None
             }
             // DIVU
             op if op & 0xFC00003F == 0x0000001B => {
@@ -534,6 +718,8 @@ impl Cpu {
                 let divisor = self.registers.read(reg2);
                 self.registers.lo = dividend / divisor;
                 self.registers.hi = dividend % divisor;
+
+                None
             }
             // JALR - Jump and Link Register
             op if op & 0xFC00003F == 0x00000009 => {
@@ -544,6 +730,8 @@ impl Cpu {
                 self.registers
                     .write(delay_reg, self.registers.program_counter + 8);
                 self.registers.program_counter = addr;
+
+                None
             }
             // JR
             op if op & 0xFC00003F == 0x00000008 => {
@@ -552,26 +740,36 @@ impl Cpu {
                 if target & 0b11 == 0 {
                     self.registers.program_counter = target;
                 }
+
+                None
             }
             // MFHI - Move From HI
             op if op & 0xFFFF07FF == 0x00000010 => {
                 let reg = (opcode & 0x0000F800) >> 11;
                 self.registers.write(reg, self.registers.hi);
+
+                None
             }
             // MFLO - Move From LO
             op if op & 0xFFFF07FF == 0x00000012 => {
                 let reg = (opcode & 0x0000F800) >> 11;
                 self.registers.write(reg, self.registers.lo);
+
+                None
             }
             // MTHI - Move To HI
             op if op & 0xFC1FFFFF == 0x00000011 => {
                 let reg = (opcode & 0x03E00000) >> 21;
                 self.registers.hi = self.registers.read(reg);
+
+                None
             }
             // MTLO - Move To LO
             op if op & 0xFC1FFFFF == 0x00000013 => {
                 let reg = (opcode & 0x03E00000) >> 21;
                 self.registers.lo = self.registers.read(reg);
+
+                None
             }
             // MULT - Multiply Word
             op if op & 0xFC00FFFF == 0x00000018 => {
@@ -584,6 +782,8 @@ impl Cpu {
 
                 self.registers.lo = (product & 0x00000000FFFFFFFF) as u32;
                 self.registers.hi = ((product & 0xFFFFFFFF00000000) >> 32) as u32;
+
+                None
             }
             // MULTU - Multiply Unsigned Word
             op if op & 0xFC00FFFF == 0x00000019 => {
@@ -596,6 +796,8 @@ impl Cpu {
 
                 self.registers.lo = (product & 0x00000000FFFFFFFF) as u32;
                 self.registers.hi = ((product & 0xFFFFFFFF00000000) >> 32) as u32;
+
+                None
             }
             // NOR
             op if op & 0xFC0007FF == 0x00000027 => {
@@ -607,6 +809,8 @@ impl Cpu {
                     target,
                     !(self.registers.read(reg1) | self.registers.read(reg2)),
                 );
+
+                None
             }
             // OR
             op if op & 0xFC0007FF == 0x00000025 => {
@@ -618,6 +822,8 @@ impl Cpu {
                     target,
                     self.registers.read(reg1) | self.registers.read(reg2),
                 );
+
+                None
             }
             // SLL - Shift Word Left Logical
             op if op & 0xFFE0003F == 0x00000000 => {
@@ -626,6 +832,8 @@ impl Cpu {
                 let sa = (opcode & 0x000007C0) >> 6;
 
                 self.registers.write(rd, self.registers.read(rt) << sa);
+
+                None
             }
             // SLLV - Shift Word Left Logical Variable
             op if op & 0xFC0007FF == 0x00000004 => {
@@ -635,6 +843,8 @@ impl Cpu {
 
                 let shift = self.registers.read(rs) & 0x7;
                 self.registers.write(rd, self.registers.read(rt) << shift);
+
+                None
             }
             // SLT - Set on Less Than
             op if op & 0xFC0007FF == 0x0000002A => {
@@ -644,6 +854,8 @@ impl Cpu {
 
                 let result = (self.registers.read(rs) as i32) < self.registers.read(rt) as i32;
                 self.registers.write(rd, result as u32);
+
+                None
             }
             // SLTU - Set on Less Than Unsigned
             op if op & 0xFC0007FF == 0x0000004B => {
@@ -653,6 +865,8 @@ impl Cpu {
 
                 let result = self.registers.read(rs) < self.registers.read(rt);
                 self.registers.write(rd, result as u32);
+
+                None
             }
             // SRA - Shift Word Right Arithmetic
             op if op & 0xFFE0003F == 0x00000003 => {
@@ -662,6 +876,8 @@ impl Cpu {
 
                 self.registers
                     .write(rd, ((self.registers.read(rt) as i32) >> sa) as u32);
+
+                None
             }
             // SRAV - Shift Word Right Arithmetic Variable
             op if op & 0xFC0007FF == 0x00000007 => {
@@ -672,6 +888,8 @@ impl Cpu {
                 let shift = self.registers.read(rs) & 0b11111;
                 self.registers
                     .write(rd, ((self.registers.read(rt) as i32) >> shift) as u32);
+
+                None
             }
             // SRL - Shift Word Right Logical
             op if op & 0xFFE0003F == 0x00000002 => {
@@ -680,6 +898,8 @@ impl Cpu {
                 let sa = (opcode & 0x000007C0) >> 6;
 
                 self.registers.write(rd, self.registers.read(rt) >> sa);
+
+                None
             }
             // SRLV - Shift Word Right Logical Variable
             op if op & 0xFC0007FF == 0x00000006 => {
@@ -689,6 +909,8 @@ impl Cpu {
 
                 let shift = self.registers.read(rs) & 0b11111;
                 self.registers.write(rd, self.registers.read(rt) >> shift);
+
+                None
             }
             // SUB - Subtract Word
             op if op & 0xFC0007FF == 0x00000022 => {
@@ -696,13 +918,17 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let rd = (opcode & 0x0000F800) >> 11;
 
-                self.registers.write(
-                    rd,
-                    Cpu::add(
-                        self.registers.read(rs),
-                        (!self.registers.read(rt)).wrapping_add(1),
-                    ),
+                let (diff, err) = Cpu::add(
+                    self.registers.read(rs),
+                    (!self.registers.read(rt)).wrapping_add(1),
                 );
+                self.registers.write(rd, diff);
+
+                if err {
+                    Some(ExceptionType::ArithmeticOverflow)
+                } else {
+                    None
+                }
             }
             // SUBU - Subtract Unsigned Word
             op if op & 0xFC0007FF == 0x00000023 => {
@@ -717,11 +943,11 @@ impl Cpu {
                         (!self.registers.read(rt)).wrapping_add(1),
                     ),
                 );
+
+                None
             }
             // SYSCALL
-            op if op & 0xFC00003F == 0x0000000C => {
-                todo!()
-            }
+            op if op & 0xFC00003F == 0x0000000C => Some(ExceptionType::Syscall),
             // XOR
             op if op & 0xFC0007FF == 0x00000026 => {
                 let rs = (opcode & 0x03E00000) >> 21;
@@ -730,16 +956,16 @@ impl Cpu {
 
                 self.registers
                     .write(rd, self.registers.read(rs) ^ self.registers.read(rt));
+
+                None
             }
             _ => panic!(),
         }
     }
 
-    // Casues an exception on overflow
-    fn add(arg1: u32, arg2: u32) -> u32 {
-        let (sum, _carry) = arg1.overflowing_add(arg2);
-        // logic to handle overflow
-        sum
+    // Casues an exception on overflow, indicated by true in bool
+    fn add(arg1: u32, arg2: u32) -> (u32, bool) {
+        arg1.overflowing_add(arg2)
     }
 
     // Does not cause an exception on overflow

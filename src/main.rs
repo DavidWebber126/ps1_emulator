@@ -1,6 +1,6 @@
 mod bus;
-mod cpu;
 mod cop0;
+mod cpu;
 
 use cpu::Cpu;
 

@@ -5,6 +5,12 @@ pub struct Cop0 {
     pub cause: CauseRegister,
     pub epc: u32,
     pub badvaddr: u32,
+    pub target: u32,
+    pub breakpoint_program_counter: u32,
+    pub breakpoint_data_address: u32,
+    pub breakpoint_data_address_mask: u32,
+    pub breakpoint_program_counter_mask: u32,
+    pub debug: u32,
 }
 
 impl Cop0 {
@@ -14,17 +20,42 @@ impl Cop0 {
             cause: CauseRegister(0),
             epc: 0,
             badvaddr: 0,
+            target: 0,
+            breakpoint_program_counter: 0,
+            breakpoint_data_address: 0,
+            breakpoint_data_address_mask: 0,
+            breakpoint_program_counter_mask: 0,
+            debug: 0,
         }
     }
 
-    pub fn read_register(&self, reg: u32) -> u32 {
+    pub fn register_read(&self, reg: u32) -> Result<u32, ExceptionType> {
         match reg {
-            8 => self.badvaddr,
-            12 => self.sr.0,
-            13 => self.cause.0,
-            14 => self.epc,
-            15 => 0x00000002,
-            _ => 0,
+            3 => Ok(self.breakpoint_program_counter),
+            5 => Ok(self.breakpoint_data_address),
+            6 => Ok(self.target),
+            7 => Ok(self.debug),
+            8 => Ok(self.badvaddr),
+            9 => Ok(self.breakpoint_data_address_mask),
+            11 => Ok(self.breakpoint_program_counter_mask),
+            12 => Ok(self.sr.0),
+            13 => Ok(self.cause.0),
+            14 => Ok(self.epc),
+            15 => Ok(0x00000002),
+            16..=31 => Ok(0),
+            _ => Err(ExceptionType::Reserved),
+        }
+    }
+
+    pub fn register_write(&mut self, reg: u32, val: u32) {
+        match reg {
+            3 => self.breakpoint_program_counter = val,
+            5 => self.breakpoint_data_address = val,
+            6 => {}
+            7 => self.debug = val,
+            8 => {}
+            9 => self.breakpoint_data_address_mask = val,
+            _ => {}
         }
     }
 }
@@ -37,9 +68,12 @@ impl CauseRegister {
             ExceptionType::Interrupt => 0,
             ExceptionType::AddressErrorLoad(_) => 4,
             ExceptionType::AddressErrorStore(_) => 5,
+            ExceptionType::BusErrorLoad => 7,
             ExceptionType::Syscall => 8,
             ExceptionType::Break => 9,
-            ExceptionType::ArithmeticOverflow => 12,
+            ExceptionType::Reserved => 0xA,
+            ExceptionType::CoprocessorUnusable => 0xB,
+            ExceptionType::ArithmeticOverflow => 0xC,
         };
 
         self.0 = (self.0 & 0xFFFFFF83) | (code << 2);

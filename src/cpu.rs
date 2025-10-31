@@ -37,7 +37,7 @@ impl Registers {
     }
 }
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub enum ExceptionType {
     #[expect(unused)]
     Interrupt, // External Interrupt
@@ -47,12 +47,12 @@ pub enum ExceptionType {
     AddressErrorLoad(u32),  // Address Error, data load or instruction fetch
     AddressErrorStore(u32), // Address Error, data store
     //BusErrorFetch,       // Bus error on instruction fetch
-    //BusErrorLoad,        // Bus error on data load/store
-    Syscall, // Syscall
-    Break,   // Breakpoint
-    //Reserved,            // Reserved Instruction
-    //CoprocessorUnusable, // Coprocessor Unusable
-    ArithmeticOverflow, // Arithmetic Overflow
+    BusErrorLoad,        // Bus error on data load/store
+    Syscall,             // Syscall
+    Break,               // Breakpoint
+    Reserved,            // Reserved Instruction
+    CoprocessorUnusable, // Coprocessor Unusable
+    ArithmeticOverflow,  // Arithmetic Overflow
 }
 
 pub struct Cpu {
@@ -108,7 +108,7 @@ impl Cpu {
     }
 
     pub fn step_instruction(&mut self) {
-        if self.registers.program_counter % 4 != 0 {
+        if !self.registers.program_counter.is_multiple_of(4) {
             self.handle_exception(
                 ExceptionType::AddressErrorLoad(self.registers.program_counter),
                 false,
@@ -116,14 +116,17 @@ impl Cpu {
             return;
         }
 
-        let opcode = self.bus.mem_read_word(self.registers.program_counter);
+        let opcode = self
+            .bus
+            .mem_read_word(self.registers.program_counter)
+            .expect("Issue with opcode");
 
         let (next_pc, in_delay_slot) = match self.registers.delayed_branch.take() {
             Some(addr) => (addr, true),
             None => (self.registers.program_counter + 4, false),
         };
 
-        if let Some(exception) = self.execute_opcode(opcode) {
+        if let Err(exception) = self.execute_opcode(opcode) {
             self.handle_exception(exception, in_delay_slot);
             return;
         }
@@ -131,7 +134,7 @@ impl Cpu {
         self.registers.program_counter = next_pc;
     }
 
-    fn execute_opcode(&mut self, opcode: u32) -> Option<ExceptionType> {
+    fn execute_opcode(&mut self, opcode: u32) -> Result<(), ExceptionType> {
         match opcode {
             // ADDI
             0x20000000..=0x20FFFFFF => {
@@ -143,9 +146,9 @@ impl Cpu {
                 self.registers.write(target, sum);
 
                 if err {
-                    Some(ExceptionType::ArithmeticOverflow)
+                    Err(ExceptionType::ArithmeticOverflow)
                 } else {
-                    None
+                    Ok(())
                 }
             }
             // ADDIU
@@ -159,7 +162,7 @@ impl Cpu {
                     Cpu::addu(self.registers.read(reg), (imm as i32) as u32),
                 );
 
-                None
+                Ok(())
             }
             // ANDI
             0x30000000..=0x33FFFFFF => {
@@ -170,7 +173,7 @@ impl Cpu {
                 self.registers
                     .write(target, self.registers.read(reg) & ((imm as i32) as u32));
 
-                None
+                Ok(())
             }
             // BEQ - Branch on equal
             0x10000000..=0x13000000 => {
@@ -180,11 +183,11 @@ impl Cpu {
 
                 if self.registers.read(source) == self.registers.read(target) {
                     let offset = (imm as i32) << 2;
-                    self.registers.program_counter =
-                        self.registers.program_counter.wrapping_add(offset as u32);
+                    self.registers.delayed_branch =
+                        Some(self.registers.program_counter.wrapping_add(offset as u32));
                 }
 
-                None
+                Ok(())
             }
             // BGEZ - Branch on greater than or equal to zero. Name = 0b00001
             // BGEZAL - Branch on greater than or equal to zero and link. Name = 0b10001
@@ -203,11 +206,11 @@ impl Cpu {
                 // Both conditions true then BGEZ/BGEZAL, if both false then BLTZ/BLTZAL
                 if (name & 0x1 > 0) == (self.registers.read(reg) & 0x80000000 == 0) {
                     let offset = (imm as i32) << 2;
-                    self.registers.program_counter =
-                        self.registers.program_counter.wrapping_add(offset as u32);
+                    self.registers.delayed_branch =
+                        Some(self.registers.program_counter.wrapping_add(offset as u32));
                 }
 
-                None
+                Ok(())
             }
             // BGTZ - Branch on greater than or equal to zero
             0x1C000000..=0x1FFFFFFF => {
@@ -216,11 +219,11 @@ impl Cpu {
 
                 if self.registers.read(reg) & 0x80000000 == 0 && self.registers.read(reg) > 0 {
                     let offset = (imm as i32) << 2;
-                    self.registers.program_counter =
-                        self.registers.program_counter.wrapping_add(offset as u32);
+                    self.registers.delayed_branch =
+                        Some(self.registers.program_counter.wrapping_add(offset as u32));
                 }
 
-                None
+                Ok(())
             }
             // BNE
             0x14000000..=0x17FFFFFF => {
@@ -230,30 +233,30 @@ impl Cpu {
 
                 if self.registers.read(source) != self.registers.read(target) {
                     let offset = (imm as i32) << 2;
-                    self.registers.program_counter =
-                        self.registers.program_counter.wrapping_add(offset as u32);
+                    self.registers.delayed_branch =
+                        Some(self.registers.program_counter.wrapping_add(offset as u32));
                 }
 
-                None
+                Ok(())
             }
             // JUMP
             0x08000000..=0x0BFFFFFF => {
                 let target = (opcode & 0x03FFFFFF) << 2;
 
-                self.registers.program_counter =
-                    (self.registers.program_counter & 0x0FFFFFFF) | target;
+                self.registers.delayed_branch =
+                    Some((self.registers.program_counter & 0x0FFFFFFF) | target);
 
-                None
+                Ok(())
             }
             // JAL - Jump and Link
             0x0C000000..=0x0FFFFFFF => {
                 let target = (opcode & 0x03FFFFFF) << 2;
 
                 self.registers.registers[31] = self.registers.program_counter + 8;
-                self.registers.program_counter =
-                    (self.registers.program_counter & 0x0FFFFFFF) | target;
+                self.registers.delayed_branch =
+                    Some((self.registers.program_counter & 0x0FFFFFFF) | target);
 
-                None
+                Ok(())
             }
             // LB - Load Byte
             0x80000000..=0x83FFFFFF => {
@@ -262,10 +265,10 @@ impl Cpu {
                 let offset = (opcode & 0x0000FFFF) as i16;
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
-                let data = self.bus.mem_read_byte(addr) as i8;
+                let data = self.bus.mem_read_byte(addr)? as i8;
                 self.registers.write(rt, data as i32 as u32);
 
-                None
+                Ok(())
             }
             // LBU - Load Byte Unsigned
             0x90000000..=0x93FFFFFF => {
@@ -274,10 +277,10 @@ impl Cpu {
                 let offset = (opcode & 0x0000FFFF) as i16;
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
-                self.registers
-                    .write(rt, self.bus.mem_read_byte(addr) as u32);
+                let data = self.bus.mem_read_byte(addr)?;
+                self.registers.write(rt, data as u32);
 
-                None
+                Ok(())
             }
             // LH - Load Halfword
             0x84000000..=0x87FFFFFF => {
@@ -286,10 +289,10 @@ impl Cpu {
                 let offset = (opcode & 0x0000FFFF) as i16;
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
-                let halfword = self.bus.mem_read_halfword(addr) as i16;
+                let halfword = self.bus.mem_read_halfword(addr)? as i16;
                 self.registers.write(rt, halfword as i32 as u32);
 
-                None
+                Ok(())
             }
             // LHU - Load Halfword Unsigned
             0x94000000..=0x97FFFFFF => {
@@ -299,9 +302,9 @@ impl Cpu {
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 self.registers
-                    .write(rt, self.bus.mem_read_halfword(addr) as u32);
+                    .write(rt, self.bus.mem_read_halfword(addr)? as u32);
 
-                None
+                Ok(())
             }
             // LUI - Load Upper Immediate
             0x3C000000..=0x3C1FFFFF => {
@@ -310,7 +313,7 @@ impl Cpu {
 
                 self.registers.write(target, imm);
 
-                None
+                Ok(())
             }
             // LW - Load Word
             0x8C000000..=0x8FFFFFFF => {
@@ -319,9 +322,9 @@ impl Cpu {
                 let offset = (opcode & 0x0000FFFF) as i16;
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
-                self.registers.write(rt, self.bus.mem_read_word(addr));
+                self.registers.write(rt, self.bus.mem_read_word(addr)?);
 
-                None
+                Ok(())
             }
             // LWL - Load Word Left
             0x88000000..=0x8BFFFFFF => {
@@ -332,7 +335,7 @@ impl Cpu {
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32) as usize;
                 let [b0, b1, b2, b3] = self
                     .bus
-                    .mem_read_word(addr as u32 & 0xFFFFFFFC)
+                    .mem_read_word(addr as u32 & 0xFFFFFFFC)?
                     .to_le_bytes();
                 let [_, r1, r2, r3] = self.registers.read(rt).to_le_bytes();
                 match addr % 4 {
@@ -351,7 +354,7 @@ impl Cpu {
                     _ => panic!("Impossible"),
                 };
 
-                None
+                Ok(())
             }
             // LWR - Load Word Right
             0x98000000..=0x9BFFFFFF => {
@@ -362,7 +365,7 @@ impl Cpu {
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32) as usize;
                 let [b0, b1, b2, b3] = self
                     .bus
-                    .mem_read_word(addr as u32 & 0xFFFFFFFC)
+                    .mem_read_word(addr as u32 & 0xFFFFFFFC)?
                     .to_le_bytes();
                 let [r0, r1, r2, _] = self.registers.read(rt).to_le_bytes();
                 match addr % 4 {
@@ -381,7 +384,7 @@ impl Cpu {
                     _ => panic!("Impossible"),
                 };
 
-                None
+                Ok(())
             }
             // ORI - Or Immediate
             0x34000000..=0x37FFFFFF => {
@@ -392,7 +395,7 @@ impl Cpu {
                 self.registers
                     .write(target, self.registers.read(source) | imm);
 
-                None
+                Ok(())
             }
             // SB - Store Byte
             0xA0000000..=0xA3FFFFFF => {
@@ -402,9 +405,9 @@ impl Cpu {
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 let byte = (self.registers.read(target) & 0x000000FF) as u8;
-                self.bus.mem_write_byte(addr, byte);
+                self.bus.mem_write_byte(addr, byte)?;
 
-                None
+                Ok(())
             }
             // SH - Store Halfword
             0xA4000000..=0xA7FFFFFF => {
@@ -413,10 +416,13 @@ impl Cpu {
                 let offset = (opcode & 0x0000FFFF) as i16;
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
-                let halfbyte = (self.registers.read(target) & 0x0000FFFF) as u16;
-                self.bus.mem_write_halfword(addr, halfbyte);
-
-                None
+                if addr.is_multiple_of(2) {
+                    let halfbyte = (self.registers.read(target) & 0x0000FFFF) as u16;
+                    self.bus.mem_write_halfword(addr, halfbyte)?;
+                    Ok(())
+                } else {
+                    Err(ExceptionType::AddressErrorStore(addr))
+                }
             }
             // SLTI - Set on Less Than Immediate
             0x28000000..=0x2BFFFFFF => {
@@ -430,7 +436,7 @@ impl Cpu {
                     self.registers.write(rt, 0);
                 }
 
-                None
+                Ok(())
             }
             // SLTIU
             0x2C000000..=0x2FFFFFFF => {
@@ -444,7 +450,7 @@ impl Cpu {
                     self.registers.write(rt, 0);
                 }
 
-                None
+                Ok(())
             }
             // SW - Store Word
             0xAC000000..=0xAFFFFFFF => {
@@ -453,9 +459,12 @@ impl Cpu {
                 let offset = (opcode & 0x0000FFFF) as i16;
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
-                self.bus.mem_write_word(addr, self.registers.read(rt));
-
-                None
+                if addr.is_multiple_of(4) {
+                    self.bus.mem_write_word(addr, self.registers.read(rt))?;
+                    Ok(())
+                } else {
+                    Err(ExceptionType::AddressErrorStore(addr))
+                }
             }
             // SWL - Store Word Left
             0xA8000000..=0xABFFFFFF => {
@@ -463,31 +472,31 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
-                let addr = self.registers.read(base).wrapping_add_signed(offset as i32) as usize;
+                let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 let [b0, b1, b2, b3] = self.registers.read(rt).to_le_bytes();
                 match addr % 4 {
                     0 => {
-                        self.bus.ram[addr] = b0;
-                        self.bus.ram[addr + 1] = b1;
-                        self.bus.ram[addr + 2] = b2;
-                        self.bus.ram[addr + 3] = b3;
+                        self.bus.mem_write_byte(addr, b0)?;
+                        self.bus.mem_write_byte(addr + 1, b1)?;
+                        self.bus.mem_write_byte(addr + 2, b2)?;
+                        self.bus.mem_write_byte(addr + 3, b3)?;
                     }
                     1 => {
-                        self.bus.ram[addr] = b0;
-                        self.bus.ram[addr + 1] = b1;
-                        self.bus.ram[addr + 2] = b2;
+                        self.bus.mem_write_byte(addr, b0)?;
+                        self.bus.mem_write_byte(addr + 1, b1)?;
+                        self.bus.mem_write_byte(addr + 2, b2)?;
                     }
                     2 => {
-                        self.bus.ram[addr] = b0;
-                        self.bus.ram[addr + 1] = b1;
+                        self.bus.mem_write_byte(addr, b0)?;
+                        self.bus.mem_write_byte(addr + 1, b1)?;
                     }
                     3 => {
-                        self.bus.ram[addr] = b0;
+                        self.bus.mem_write_byte(addr, b0)?;
                     }
                     _ => panic!("Impossible"),
                 };
 
-                None
+                Ok(())
             }
             // SWR - Store Word Right
             0xB8000000..=0xBBFFFFFF => {
@@ -495,31 +504,31 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
-                let addr = self.registers.read(base).wrapping_add_signed(offset as i32) as usize;
+                let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 let [b0, b1, b2, b3] = self.registers.read(rt).to_le_bytes();
                 match addr % 4 {
                     0 => {
-                        self.bus.ram[addr] = b3;
+                        self.bus.mem_write_byte(addr, b3)?;
                     }
                     1 => {
-                        self.bus.ram[addr] = b3;
-                        self.bus.ram[addr - 1] = b2;
+                        self.bus.mem_write_byte(addr, b3)?;
+                        self.bus.mem_write_byte(addr - 1, b2)?;
                     }
                     2 => {
-                        self.bus.ram[addr] = b3;
-                        self.bus.ram[addr - 1] = b2;
-                        self.bus.ram[addr - 2] = b1;
+                        self.bus.mem_write_byte(addr, b3)?;
+                        self.bus.mem_write_byte(addr - 1, b2)?;
+                        self.bus.mem_write_byte(addr - 2, b1)?;
                     }
                     3 => {
-                        self.bus.ram[addr] = b3;
-                        self.bus.ram[addr - 1] = b2;
-                        self.bus.ram[addr - 2] = b1;
-                        self.bus.ram[addr - 3] = b0;
+                        self.bus.mem_write_byte(addr, b3)?;
+                        self.bus.mem_write_byte(addr - 1, b2)?;
+                        self.bus.mem_write_byte(addr - 2, b1)?;
+                        self.bus.mem_write_byte(addr - 3, b0)?;
                     }
                     _ => panic!("Impossible"),
                 };
 
-                None
+                Ok(())
             }
             // XORI
             0x38000000..=0x3BFFFFFF => {
@@ -529,7 +538,7 @@ impl Cpu {
 
                 self.registers.write(rt, self.registers.read(rs) ^ imm);
 
-                None
+                Ok(())
             }
             // Coprocessor
             // CFC0 - Move Control From Coprocessor 0
@@ -552,8 +561,10 @@ impl Cpu {
             // RFE - Return from Exception
             0x42000010 => {
                 self.cop0.sr.pop_interrupt();
-                None
+                Ok(())
             }
+            // TLBP, TLBR, TLBWI, TLBWR - Returns Reserved Instruction Exception
+            0x42000008 | 0x42000001 | 0x42000002 | 0x42000006 => Err(ExceptionType::Reserved),
             // COP1 - Coprocessor Operation 1
             0x46000000..=0x47FFFFFF => {
                 panic!("No Coprocessor 1")
@@ -603,9 +614,12 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let rd = (opcode & 0x0000F800) >> 11;
 
-                self.registers.write(rt, self.cop0.read_register(rd));
-
-                None
+                if let Ok(val) = self.cop0.register_read(rd) {
+                    self.registers.write(rt, val);
+                    Ok(())
+                } else {
+                    Err(ExceptionType::CoprocessorUnusable)
+                }
             }
             // MFC1 - Move From Coprocessor 1
             0x44000000..=0x441FFFFF => {
@@ -620,8 +634,13 @@ impl Cpu {
                 panic!("No Coprocessor 3")
             }
             // MTC0 - Move To Coprocessor 0
-            0x40800000..=0x409FFFFF => {
-                todo!()
+            0x40800000..=0x409FFFFF if opcode & 0x7FF == 0 => {
+                let rt = (opcode & 0x001F0000) >> 16;
+                let rd = (opcode & 0x0000F800) >> 11;
+
+                self.cop0.register_write(rd, self.registers.read(rt));
+
+                Ok(())
             }
             // MTC1 - Move to Coprocessor 1
             0x44800000..=0x449FFFFF => {
@@ -662,9 +681,9 @@ impl Cpu {
                 self.registers.write(target, sum);
 
                 if err {
-                    Some(ExceptionType::ArithmeticOverflow)
+                    Err(ExceptionType::ArithmeticOverflow)
                 } else {
-                    None
+                    Ok(())
                 }
             }
             // ADDU
@@ -676,7 +695,7 @@ impl Cpu {
                 let sum = Cpu::addu(self.registers.read(reg1), self.registers.read(reg2));
                 self.registers.write(target, sum);
 
-                None
+                Ok(())
             }
             // AND
             op if op & 0xFC00003F == 0x00000024 => {
@@ -689,10 +708,10 @@ impl Cpu {
                     self.registers.read(reg1) & self.registers.read(reg2),
                 );
 
-                None
+                Ok(())
             }
             // BREAK
-            op if op & 0xFC00003F == 0x0000000D => Some(ExceptionType::Break),
+            op if op & 0xFC00003F == 0x0000000D => Err(ExceptionType::Break),
             // DIV
             op if op & 0xFC00003F == 0x0000001A => {
                 let reg1 = (opcode & 0x03E00000) >> 21;
@@ -707,7 +726,7 @@ impl Cpu {
                     self.registers.hi = (dividend % divisor) as u32;
                 }
 
-                None
+                Ok(())
             }
             // DIVU
             op if op & 0xFC00003F == 0x0000001B => {
@@ -719,7 +738,7 @@ impl Cpu {
                 self.registers.lo = dividend / divisor;
                 self.registers.hi = dividend % divisor;
 
-                None
+                Ok(())
             }
             // JALR - Jump and Link Register
             op if op & 0xFC00003F == 0x00000009 => {
@@ -729,47 +748,47 @@ impl Cpu {
                 let addr = self.registers.read(source_reg);
                 self.registers
                     .write(delay_reg, self.registers.program_counter + 8);
-                self.registers.program_counter = addr;
+                self.registers.delayed_branch = Some(addr);
 
-                None
+                Ok(())
             }
             // JR
             op if op & 0xFC00003F == 0x00000008 => {
                 let source_reg = (opcode & 0x03E00000) >> 21;
                 let target = self.registers.read(source_reg);
                 if target & 0b11 == 0 {
-                    self.registers.program_counter = target;
+                    self.registers.delayed_branch = Some(target);
                 }
 
-                None
+                Ok(())
             }
             // MFHI - Move From HI
             op if op & 0xFFFF07FF == 0x00000010 => {
                 let reg = (opcode & 0x0000F800) >> 11;
                 self.registers.write(reg, self.registers.hi);
 
-                None
+                Ok(())
             }
             // MFLO - Move From LO
             op if op & 0xFFFF07FF == 0x00000012 => {
                 let reg = (opcode & 0x0000F800) >> 11;
                 self.registers.write(reg, self.registers.lo);
 
-                None
+                Ok(())
             }
             // MTHI - Move To HI
             op if op & 0xFC1FFFFF == 0x00000011 => {
                 let reg = (opcode & 0x03E00000) >> 21;
                 self.registers.hi = self.registers.read(reg);
 
-                None
+                Ok(())
             }
             // MTLO - Move To LO
             op if op & 0xFC1FFFFF == 0x00000013 => {
                 let reg = (opcode & 0x03E00000) >> 21;
                 self.registers.lo = self.registers.read(reg);
 
-                None
+                Ok(())
             }
             // MULT - Multiply Word
             op if op & 0xFC00FFFF == 0x00000018 => {
@@ -783,7 +802,7 @@ impl Cpu {
                 self.registers.lo = (product & 0x00000000FFFFFFFF) as u32;
                 self.registers.hi = ((product & 0xFFFFFFFF00000000) >> 32) as u32;
 
-                None
+                Ok(())
             }
             // MULTU - Multiply Unsigned Word
             op if op & 0xFC00FFFF == 0x00000019 => {
@@ -797,7 +816,7 @@ impl Cpu {
                 self.registers.lo = (product & 0x00000000FFFFFFFF) as u32;
                 self.registers.hi = ((product & 0xFFFFFFFF00000000) >> 32) as u32;
 
-                None
+                Ok(())
             }
             // NOR
             op if op & 0xFC0007FF == 0x00000027 => {
@@ -810,7 +829,7 @@ impl Cpu {
                     !(self.registers.read(reg1) | self.registers.read(reg2)),
                 );
 
-                None
+                Ok(())
             }
             // OR
             op if op & 0xFC0007FF == 0x00000025 => {
@@ -823,7 +842,7 @@ impl Cpu {
                     self.registers.read(reg1) | self.registers.read(reg2),
                 );
 
-                None
+                Ok(())
             }
             // SLL - Shift Word Left Logical
             op if op & 0xFFE0003F == 0x00000000 => {
@@ -833,7 +852,7 @@ impl Cpu {
 
                 self.registers.write(rd, self.registers.read(rt) << sa);
 
-                None
+                Ok(())
             }
             // SLLV - Shift Word Left Logical Variable
             op if op & 0xFC0007FF == 0x00000004 => {
@@ -844,7 +863,7 @@ impl Cpu {
                 let shift = self.registers.read(rs) & 0x7;
                 self.registers.write(rd, self.registers.read(rt) << shift);
 
-                None
+                Ok(())
             }
             // SLT - Set on Less Than
             op if op & 0xFC0007FF == 0x0000002A => {
@@ -855,7 +874,7 @@ impl Cpu {
                 let result = (self.registers.read(rs) as i32) < self.registers.read(rt) as i32;
                 self.registers.write(rd, result as u32);
 
-                None
+                Ok(())
             }
             // SLTU - Set on Less Than Unsigned
             op if op & 0xFC0007FF == 0x0000004B => {
@@ -866,7 +885,7 @@ impl Cpu {
                 let result = self.registers.read(rs) < self.registers.read(rt);
                 self.registers.write(rd, result as u32);
 
-                None
+                Ok(())
             }
             // SRA - Shift Word Right Arithmetic
             op if op & 0xFFE0003F == 0x00000003 => {
@@ -877,7 +896,7 @@ impl Cpu {
                 self.registers
                     .write(rd, ((self.registers.read(rt) as i32) >> sa) as u32);
 
-                None
+                Ok(())
             }
             // SRAV - Shift Word Right Arithmetic Variable
             op if op & 0xFC0007FF == 0x00000007 => {
@@ -889,7 +908,7 @@ impl Cpu {
                 self.registers
                     .write(rd, ((self.registers.read(rt) as i32) >> shift) as u32);
 
-                None
+                Ok(())
             }
             // SRL - Shift Word Right Logical
             op if op & 0xFFE0003F == 0x00000002 => {
@@ -899,7 +918,7 @@ impl Cpu {
 
                 self.registers.write(rd, self.registers.read(rt) >> sa);
 
-                None
+                Ok(())
             }
             // SRLV - Shift Word Right Logical Variable
             op if op & 0xFC0007FF == 0x00000006 => {
@@ -910,7 +929,7 @@ impl Cpu {
                 let shift = self.registers.read(rs) & 0b11111;
                 self.registers.write(rd, self.registers.read(rt) >> shift);
 
-                None
+                Ok(())
             }
             // SUB - Subtract Word
             op if op & 0xFC0007FF == 0x00000022 => {
@@ -925,9 +944,9 @@ impl Cpu {
                 self.registers.write(rd, diff);
 
                 if err {
-                    Some(ExceptionType::ArithmeticOverflow)
+                    Err(ExceptionType::ArithmeticOverflow)
                 } else {
-                    None
+                    Ok(())
                 }
             }
             // SUBU - Subtract Unsigned Word
@@ -944,10 +963,10 @@ impl Cpu {
                     ),
                 );
 
-                None
+                Ok(())
             }
             // SYSCALL
-            op if op & 0xFC00003F == 0x0000000C => Some(ExceptionType::Syscall),
+            op if op & 0xFC00003F == 0x0000000C => Err(ExceptionType::Syscall),
             // XOR
             op if op & 0xFC0007FF == 0x00000026 => {
                 let rs = (opcode & 0x03E00000) >> 21;
@@ -957,7 +976,7 @@ impl Cpu {
                 self.registers
                     .write(rd, self.registers.read(rs) ^ self.registers.read(rt));
 
-                None
+                Ok(())
             }
             _ => panic!(),
         }

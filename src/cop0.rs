@@ -47,15 +47,38 @@ impl Cop0 {
         }
     }
 
-    pub fn register_write(&mut self, reg: u32, val: u32) {
+    pub fn register_write(&mut self, reg: u32, val: u32) -> Result<(), ExceptionType> {
         match reg {
-            3 => self.breakpoint_program_counter = val,
-            5 => self.breakpoint_data_address = val,
-            6 => {}
-            7 => self.debug = val,
-            8 => {}
-            9 => self.breakpoint_data_address_mask = val,
-            _ => {}
+            3 => {
+                self.breakpoint_program_counter = val;
+                Ok(())
+            }
+            5 => {
+                self.breakpoint_data_address = val;
+                Ok(())
+            }
+            7 => {
+                self.debug = val;
+                Ok(())
+            }
+            9 => {
+                self.breakpoint_data_address_mask = val;
+                Ok(())
+            }
+            11 => {
+                self.breakpoint_program_counter_mask = val;
+                Ok(())
+            }
+            12 => {
+                self.sr.write(val);
+                Ok(())
+            }
+            13 => {
+                self.cause.write(val);
+                Ok(())
+            }
+            6 | 8 | 14 | 15 => Ok(()),
+            _ => Err(ExceptionType::Reserved),
         }
     }
 }
@@ -63,6 +86,12 @@ impl Cop0 {
 pub struct CauseRegister(u32);
 
 impl CauseRegister {
+    // Only bits 8, 9 can be written to
+    pub fn write(&mut self, val: u32) {
+        self.0 = (self.0 & !(0x300)) + (val & 0x300);
+    }
+
+    // Cause register setters and getters
     pub fn set_exception_code(&mut self, exception: ExceptionType) {
         let code = match exception {
             ExceptionType::Interrupt => 0,
@@ -86,25 +115,25 @@ impl CauseRegister {
             self.0 &= 0x7FFFFFFF;
         }
     }
+
+    pub fn set_interrupt_pending(&mut self, ip: bool) {
+        if ip {
+            self.0 |= 0x00000400
+        } else {
+            self.0 &= 0xFFFFFBFF
+        }
+    }
+
+    pub fn interrupt_pending(&self) -> u32 {
+        self.0 & 0x0000FF00
+    }
 }
 
 pub struct StatusRegister(u32);
 
 impl StatusRegister {
-    pub fn set_interrupt(&mut self, ie: bool) {
-        if ie {
-            self.0 |= 0x1;
-        } else {
-            self.0 &= 0xFFFFFFFE;
-        }
-    }
-
-    pub fn set_kernel_mode(&mut self, ku: bool) {
-        if ku {
-            self.0 |= 0x2;
-        } else {
-            self.0 &= 0xFFFFFFFD;
-        }
+    pub fn write(&mut self, val: u32) {
+        self.0 = val & 0x507FFF2F;
     }
 
     pub fn push_interrupt(&mut self) {
@@ -115,7 +144,32 @@ impl StatusRegister {
         self.0 = (self.0 & 0xFFFFFFF0) + ((self.0 & 0x0000003C) >> 2);
     }
 
-    pub fn bev_is_set(&self) -> bool {
+    pub fn interrupt_mask(&self) -> u32 {
+        self.0 & 0x0000FF00
+    }
+
+    pub fn interrupt_enabled(&self) -> bool {
+        self.0 & 0x1 > 0
+    }
+
+    // SR setters and getters
+    pub fn set_interrupt(&mut self, ie: bool) {
+        if ie {
+            self.0 |= 0x1;
+        } else {
+            self.0 &= 0xFFFFFFFE;
+        }
+    }
+
+    pub fn set_kernel_mode(&mut self, ku: bool) {
+        if ku {
+            self.0 &= 0xFFFFFFFD;
+        } else {
+            self.0 |= 0x2;
+        }
+    }
+
+    pub fn get_bev(&self) -> bool {
         self.0 & 0x00400000 > 0
     }
 }

@@ -39,7 +39,6 @@ impl Registers {
 
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum ExceptionType {
-    #[expect(unused)]
     Interrupt, // External Interrupt
     //TLBMod,              // TLB Modification
     //TLBLoad,             // TLB Load
@@ -100,7 +99,7 @@ impl Cpu {
         }
 
         // Jump to Exception Vector. If BEV is set then 0xBFC00180, otherwise 0x80000080
-        if self.cop0.sr.bev_is_set() {
+        if self.cop0.sr.get_bev() {
             self.registers.program_counter = 0xBFC00180;
         } else {
             self.registers.program_counter = 0x80000080;
@@ -108,6 +107,22 @@ impl Cpu {
     }
 
     pub fn step_instruction(&mut self) {
+        // Check for interrupts
+        // Set cause bit (or clear it) if a hardware interrupt is ready
+        self.cop0
+            .cause
+            .set_interrupt_pending(self.bus.interrupt_status & self.bus.interrupt_mask > 0);
+        // Execute interrupt if SR allows
+        if self.cop0.sr.interrupt_enabled()
+            && ((self.cop0.sr.interrupt_mask() & self.cop0.cause.interrupt_pending()) > 0)
+        {
+            self.handle_exception(
+                ExceptionType::Interrupt,
+                self.registers.delayed_branch.is_some(),
+            );
+        }
+
+        // Unaligned address exception
         if !self.registers.program_counter.is_multiple_of(4) {
             self.handle_exception(
                 ExceptionType::AddressErrorLoad(self.registers.program_counter),
@@ -121,17 +136,22 @@ impl Cpu {
             .mem_read_word(self.registers.program_counter)
             .expect("Issue with opcode");
 
+        // If there is a branch delay, go to branch. Otherwise go to next instruction word
         let (next_pc, in_delay_slot) = match self.registers.delayed_branch.take() {
             Some(addr) => (addr, true),
             None => (self.registers.program_counter + 4, false),
         };
 
+        // Let each instruction take two ticks
+        // Perform before exception handler bc instruction was already executed
+        self.bus.tick(2);
+
+        // Handle Exception if something happened, otherwise go to next instruction
         if let Err(exception) = self.execute_opcode(opcode) {
             self.handle_exception(exception, in_delay_slot);
-            return;
+        } else {
+            self.registers.program_counter = next_pc;
         }
-
-        self.registers.program_counter = next_pc;
     }
 
     fn execute_opcode(&mut self, opcode: u32) -> Result<(), ExceptionType> {
@@ -638,7 +658,7 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let rd = (opcode & 0x0000F800) >> 11;
 
-                self.cop0.register_write(rd, self.registers.read(rt));
+                self.cop0.register_write(rd, self.registers.read(rt))?;
 
                 Ok(())
             }
@@ -655,9 +675,7 @@ impl Cpu {
                 panic!("No Coprocessor 3")
             }
             // SWC0 - Store Word from Coprocessor 0
-            0xE0000000..=0xE3FFFFFF => {
-                todo!()
-            }
+            0xE0000000..=0xE3FFFFFF => Err(ExceptionType::Reserved),
             // SWC1 - Store Word from Coprocessor 1
             0xE4000000..=0xE7FFFFFF => {
                 panic!("No Coprocessor 1")

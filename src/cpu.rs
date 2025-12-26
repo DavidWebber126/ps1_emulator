@@ -55,9 +55,9 @@ pub enum ExceptionType {
 }
 
 pub struct Cpu {
-    cop0: Cop0,
-    registers: Registers,
-    bus: Bus,
+    pub cop0: Cop0,
+    pub registers: Registers,
+    pub bus: Bus,
 }
 
 impl Cpu {
@@ -111,7 +111,7 @@ impl Cpu {
         // Set cause bit (or clear it) if a hardware interrupt is ready
         self.cop0
             .cause
-            .set_interrupt_pending(self.bus.interrupt_status & self.bus.interrupt_mask > 0);
+            .set_interrupt_pending(self.bus.interrupts.stat & self.bus.interrupts.mask > 0);
         // Execute interrupt if SR allows
         if self.cop0.sr.interrupt_enabled()
             && ((self.cop0.sr.interrupt_mask() & self.cop0.cause.interrupt_pending()) > 0)

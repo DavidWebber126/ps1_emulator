@@ -1,38 +1,48 @@
 use crate::cpu::ExceptionType;
+use crate::gpu::Gpu;
+use crate::interrupts::Interrupt;
 use crate::timer::Timer;
 
 pub struct Bus {
-    pub kernel: [u8; 65536],       // 64 KB
-    pub ram: [u8; 2097152],        // 2 MB
-    pub scratchpad: [u8; 1024],    // 1 KB
-    pub kernel_rom: [u8; 4194304], // 4 MB
-    pub interrupt_status: u32,
-    pub interrupt_mask: u32,
+    pub kernel: [u8; 65536],            // 64 KB
+    pub ram: Box<[u8; 2097152]>,        // 2 MB - Box needed due to large array size
+    pub scratchpad: [u8; 1024],         // 1 KB
+    pub kernel_rom: Box<[u8; 4194304]>, // 4 MB - Box needed due to large array size
+    pub interrupts: Interrupt,
     pub timer0: Timer,
     pub timer1: Timer,
     pub timer2: Timer,
+    pub gpu: Gpu,
 }
 
 impl Bus {
     pub fn new() -> Self {
         Self {
             kernel: [0; 65536],
-            ram: [0; 2097152],
+            ram: Box::new([0; 2097152]),
             scratchpad: [0; 1024],
-            kernel_rom: [0; 4194304],
-            interrupt_status: 0,
-            interrupt_mask: 0,
+            kernel_rom: Box::new([0; 4194304]),
+            interrupts: Interrupt::new(),
             timer0: Timer::new(),
             timer1: Timer::new(),
             timer2: Timer::new(),
+            gpu: Gpu::new(),
         }
     }
 
     pub fn tick(&mut self, cycles: u32) {
+        self.gpu.tick(cycles);
+
         for _ in 0..cycles {
-            self.timer0.tick();
-            self.timer1.tick();
-            self.timer2.tick();
+            if self.timer0.tick() {
+                self.interrupts.stat |= 0x00000010
+            }
+            if self.timer1.tick() {
+                self.interrupts.stat |= 0x00000020
+            }
+            if self.timer2.tick() {
+                self.interrupts.stat |= 0x00000040
+            }
         }
     }
 
@@ -105,15 +115,15 @@ impl Bus {
             }
             // IO Register
             // I_STAT - Interrupt status
-            0x1F801070 => Ok((self.interrupt_status & 0xFF) as u8),
-            0x1F801071 => Ok(((self.interrupt_status & 0xFF00) >> 8) as u8),
-            0x1F801072 => Ok(((self.interrupt_status & 0xFF0000) >> 16) as u8),
-            0x1F801073 => Ok(((self.interrupt_status & 0xFF000000) >> 24) as u8),
+            0x1F801070 => Ok((self.interrupts.stat & 0xFF) as u8),
+            0x1F801071 => Ok(((self.interrupts.stat & 0xFF00) >> 8) as u8),
+            0x1F801072 => Ok(0),
+            0x1F801073 => Ok(0),
             // I_MASK - Interrupt Mask
-            0x1F801074 => Ok((self.interrupt_mask & 0xFF) as u8),
-            0x1F801075 => Ok(((self.interrupt_mask & 0xFF00) >> 8) as u8),
-            0x1F801076 => Ok(((self.interrupt_mask & 0xFF00) >> 16) as u8),
-            0x1F801077 => Ok(((self.interrupt_mask & 0xFF00) >> 24) as u8),
+            0x1F801074 => Ok((self.interrupts.mask & 0xFF) as u8),
+            0x1F801075 => Ok(((self.interrupts.mask & 0xFF00) >> 8) as u8),
+            0x1F801076 => Ok(0),
+            0x1F801077 => Ok(0),
             // Timers
             // Timer 0 Counter Value
             0x1F801100 => Ok(self.timer0.counter as u8),
@@ -248,102 +258,148 @@ impl Bus {
                 self.kernel_rom[addr as usize] = val;
                 Ok(())
             }
+            // I_STAT
+            0x1F801070 => {
+                self.interrupts.stat = (self.interrupts.stat & 0xFFFFFF00) + val as u32;
+                Ok(())
+            }
+            0x1F801071 => {
+                self.interrupts.stat = (self.interrupts.stat & 0xFFFF00FF) + ((val as u32) << 8);
+                Ok(())
+            }
+            0x1F801072 => Ok(()),
+            0x1F801073 => Ok(()),
+            // I_MASK
+            0x1F801074 => {
+                self.interrupts.mask = (self.interrupts.mask & 0xFFFFFF00) + val as u32;
+                Ok(())
+            }
+            0x1F801075 => {
+                self.interrupts.mask = (self.interrupts.mask & 0xFFFF00FF) + ((val as u32) << 8);
+                Ok(())
+            }
+            0x1F801076 => Ok(()),
+            0x1F801077 => Ok(()),
             // Timers
             // Timer 0 Counter Value
             0x1F801100 => {
-                self.timer0.counter = self.timer0.counter & 0xFF00 + val as u16;
+                self.timer0.counter = (self.timer0.counter & 0xFF00) + val as u16;
                 Ok(())
             }
             0x1F801101 => {
-                self.timer0.counter = self.timer0.counter & 0xFF + ((val as u16) << 8);
+                self.timer0.counter = (self.timer0.counter & 0xFF) + ((val as u16) << 8);
                 Ok(())
             }
             0x1F801102 => Ok(()),
             0x1F801103 => Ok(()),
             // Timer 0 Counter Mode
             0x1F801104 => {
-                self.timer0.mode = self.timer0.mode & 0xFF00 + val as u16;
+                self.timer0
+                    .write_to_mode((self.timer0.mode & 0xFF00) + val as u16);
                 Ok(())
             }
             0x1F801105 => {
-                self.timer0.mode = self.timer0.mode & 0xFF + ((val as u16) << 8);
+                self.timer0
+                    .write_to_mode((self.timer0.mode & 0xFF) + ((val as u16) << 8));
                 Ok(())
             }
-            0x1F801106 => Ok(()),
-            0x1F801107 => Ok(()),
+            0x1F801106 => {
+                self.timer0.counter = 0;
+                Ok(())
+            }
+            0x1F801107 => {
+                self.timer0.counter = 0;
+                Ok(())
+            }
             // Timer 0 Target
             0x1F801108 => {
-                self.timer0.target_value = self.timer0.target_value & 0xFF00 + val as u16;
+                self.timer0.target_value = (self.timer0.target_value & 0xFF00) + val as u16;
                 Ok(())
             }
             0x1F801109 => {
-                self.timer0.target_value = self.timer0.target_value & 0xFF + ((val as u16) << 8);
+                self.timer0.target_value = (self.timer0.target_value & 0xFF) + ((val as u16) << 8);
                 Ok(())
             }
             0x1F80110A => Ok(()),
             0x1F80110B => Ok(()),
             // Timer 1 Counter Value
             0x1F801110 => {
-                self.timer1.counter = self.timer1.counter & 0xFF00 + val as u16;
+                self.timer1.counter = (self.timer1.counter & 0xFF00) + val as u16;
                 Ok(())
             }
             0x1F801111 => {
-                self.timer1.counter = self.timer1.counter & 0xFF + ((val as u16) << 8);
+                self.timer1.counter = (self.timer1.counter & 0xFF) + ((val as u16) << 8);
                 Ok(())
             }
             0x1F801112 => Ok(()),
             0x1F801113 => Ok(()),
             // Timer 1 Counter Mode
             0x1F801114 => {
-                self.timer1.mode = self.timer1.mode & 0xFF00 + val as u16;
+                self.timer1
+                    .write_to_mode((self.timer1.mode & 0xFF00) + val as u16);
                 Ok(())
             }
             0x1F801115 => {
-                self.timer1.mode = self.timer1.mode & 0xFF + ((val as u16) << 8);
+                self.timer1
+                    .write_to_mode((self.timer1.mode & 0xFF) + ((val as u16) << 8));
                 Ok(())
             }
-            0x1F801116 => Ok(()),
-            0x1F801117 => Ok(()),
+            0x1F801116 => {
+                self.timer1.counter = 0;
+                Ok(())
+            }
+            0x1F801117 => {
+                self.timer1.counter = 0;
+                Ok(())
+            }
             // Timer 1 Target
             0x1F801118 => {
-                self.timer1.target_value = self.timer1.target_value & 0xFF00 + val as u16;
+                self.timer1.target_value = (self.timer1.target_value & 0xFF00) + val as u16;
                 Ok(())
             }
             0x1F801119 => {
-                self.timer1.target_value = self.timer1.target_value & 0xFF + ((val as u16) << 8);
+                self.timer1.target_value = (self.timer1.target_value & 0xFF) + ((val as u16) << 8);
                 Ok(())
             }
             0x1F80111A => Ok(()),
             0x1F80111B => Ok(()),
             // Timer 2 Counter Value
             0x1F801120 => {
-                self.timer2.counter = self.timer2.counter & 0xFF00 + val as u16;
+                self.timer2.counter = (self.timer2.counter & 0xFF00) + val as u16;
                 Ok(())
             }
             0x1F801121 => {
-                self.timer2.counter = self.timer2.counter & 0xFF + ((val as u16) << 8);
+                self.timer2.counter = (self.timer2.counter & 0xFF) + ((val as u16) << 8);
                 Ok(())
             }
             0x1F801122 => Ok(()),
             0x1F801123 => Ok(()),
             // Timer 2 Counter Mode
             0x1F801124 => {
-                self.timer2.mode = self.timer2.mode & 0xFF00 + val as u16;
+                self.timer2
+                    .write_to_mode((self.timer2.mode & 0xFF00) + val as u16);
                 Ok(())
             }
             0x1F801125 => {
-                self.timer2.mode = self.timer2.mode & 0xFF + ((val as u16) << 8);
+                self.timer2
+                    .write_to_mode((self.timer2.mode & 0xFF) + ((val as u16) << 8));
                 Ok(())
             }
-            0x1F801126 => Ok(()),
-            0x1F801127 => Ok(()),
+            0x1F801126 => {
+                self.timer2.counter = 0;
+                Ok(())
+            }
+            0x1F801127 => {
+                self.timer2.counter = 0;
+                Ok(())
+            }
             // Timer 2 Target
             0x1F801128 => {
-                self.timer2.target_value = self.timer2.target_value & 0xFF00 + val as u16;
+                self.timer2.target_value = (self.timer2.target_value & 0xFF00) + val as u16;
                 Ok(())
             }
             0x1F801129 => {
-                self.timer1.target_value = self.timer1.target_value & 0xFF00 + val as u16;
+                self.timer1.target_value = (self.timer1.target_value & 0xFF00) + val as u16;
                 Ok(())
             }
             0x1F80112A => Ok(()),
@@ -357,20 +413,38 @@ impl Bus {
     }
 
     pub fn mem_read_word(&mut self, addr: u32) -> Result<u32, ExceptionType> {
-        let b0 = self.mem_read_byte(addr)?;
-        let b1 = self.mem_read_byte(addr + 1)?;
-        let b2 = self.mem_read_byte(addr + 2)?;
-        let b3 = self.mem_read_byte(addr + 3)?;
-        Ok(u32::from_le_bytes([b0, b1, b2, b3]))
+        match addr {
+            0x1F801810 => Ok(self.gpu.gpuread()),
+            0x1F801814 => Ok(self.gpu.gpustat()),
+            _ => {
+                let b0 = self.mem_read_byte(addr)?;
+                let b1 = self.mem_read_byte(addr + 1)?;
+                let b2 = self.mem_read_byte(addr + 2)?;
+                let b3 = self.mem_read_byte(addr + 3)?;
+                Ok(u32::from_le_bytes([b0, b1, b2, b3]))
+            }
+        }
     }
 
     pub fn mem_write_word(&mut self, addr: u32, val: u32) -> Result<(), ExceptionType> {
-        let [b0, b1, b2, b3] = val.to_le_bytes();
-        self.mem_write_byte(addr, b0)?;
-        self.mem_write_byte(addr, b1)?;
-        self.mem_write_byte(addr, b2)?;
-        self.mem_write_byte(addr, b3)?;
-        Ok(())
+        match addr {
+            0x1F801810 => {
+                self.gpu.gp0_write(val);
+                Ok(())
+            }
+            0x1F801814 => {
+                self.gpu.gp1_write(val);
+                Ok(())
+            }
+            _ => {
+                let [b0, b1, b2, b3] = val.to_le_bytes();
+                self.mem_write_byte(addr, b0)?;
+                self.mem_write_byte(addr, b1)?;
+                self.mem_write_byte(addr, b2)?;
+                self.mem_write_byte(addr, b3)?;
+                Ok(())
+            }
+        }
     }
 
     pub fn mem_read_halfword(&mut self, addr: u32) -> Result<u16, ExceptionType> {

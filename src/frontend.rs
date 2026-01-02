@@ -1,7 +1,8 @@
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 use crate::cpu::Cpu;
 use eframe::egui::{self, Color32, Event};
+use tracing::{Level, event};
 
 pub struct GameSelect {
     pub filepaths: Vec<PathBuf>,
@@ -24,6 +25,7 @@ impl GameSelect {
 pub struct MyApp {
     cpu: Option<Cpu>,
     paused: bool,
+    tty_output: bool,
     game_select: GameSelect,
     screen_texture: egui::TextureHandle,
     frame_buffer: [Color32; 524288],
@@ -34,6 +36,7 @@ impl MyApp {
         Self {
             cpu: None,
             paused: false,
+            tty_output: true,
             game_select: GameSelect::new(folder),
             screen_texture: cc.egui_ctx.load_texture(
                 "Noise",
@@ -50,6 +53,10 @@ impl eframe::App for MyApp {
         if let Some(cpu) = &mut self.cpu {
             if !self.paused {
                 cpu.step_instruction();
+
+                if self.tty_output {
+                    cpu.check_for_tty_output();
+                }
             }
 
             // user input
@@ -101,9 +108,27 @@ impl eframe::App for MyApp {
                     }
                 });
 
-                if let Some(_game) = &self.game_select.selected_game {
+                if let Some(game) = &self.game_select.selected_game {
+                    // Load BIOS from folder
+                    let bios_path = match fs::read_dir("bios/").unwrap().next() {
+                        Some(Ok(path)) => path.path(),
+                        _ => panic!("BIOS not found"),
+                    };
+
+                    let bios = fs::read(bios_path).unwrap();
                     // Create CPU
-                    self.cpu = Some(Cpu::new());
+                    let mut cpu = Cpu::new();
+
+                    // Load BIOS
+                    event!(Level::INFO, "BIOS size is {:08X}", bios.len());
+                    cpu.load_bios(&bios);
+
+                    // Load exe
+                    let exe = fs::read(game).unwrap();
+                    event!(Level::INFO, "Exe size (including header): {:08X}", exe.len());
+                    cpu.sideload_exe(&exe, self.tty_output);
+
+                    self.cpu = Some(cpu);
                 } else {
                     // Offer game selection option
                     egui::ComboBox::from_label("Select a Game: ").show_ui(ui, |ui| {

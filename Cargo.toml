@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 eframe = "0.33.3"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["registry", "env-filter"] }

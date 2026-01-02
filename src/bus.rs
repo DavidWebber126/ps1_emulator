@@ -3,9 +3,12 @@ use crate::gpu::Gpu;
 use crate::interrupts::Interrupt;
 use crate::timer::Timer;
 
+use tracing::{Level, event};
+
 pub struct Bus {
     pub kernel: [u8; 65536],            // 64 KB
     pub ram: Box<[u8; 2097152]>,        // 2 MB - Box needed due to large array size
+    pub expansion1: [u8; 65536],        // 64 KB
     pub scratchpad: [u8; 1024],         // 1 KB
     pub kernel_rom: Box<[u8; 4194304]>, // 4 MB - Box needed due to large array size
     pub interrupts: Interrupt,
@@ -20,6 +23,7 @@ impl Bus {
         Self {
             kernel: [0; 65536],
             ram: Box::new([0; 2097152]),
+            expansion1: [0; 65536],
             scratchpad: [0; 1024],
             kernel_rom: Box::new([0; 4194304]),
             interrupts: Interrupt::new(),
@@ -47,6 +51,8 @@ impl Bus {
     }
 
     pub fn mem_read_byte(&mut self, addr: u32) -> Result<u8, ExceptionType> {
+        event!(Level::TRACE, "Attempt to read at address: {:08X}", addr);
+
         match addr {
             // KUSEG Kernel
             0x00000000..=0x0000FFFF => Ok(self.kernel[addr as usize]),
@@ -61,32 +67,35 @@ impl Bus {
                 Ok(self.kernel[addr as usize])
             }
             // KUSEG Main RAM - Cache enabled
-            0x00100000..=0x001FFFFF => {
-                // mirror address to between 0x00100000 and 0x001FFFFF
-                let addr = addr - 0x1FFFFF;
+            0x00010000..=0x001FFFFF => {
+                // mirror address to between 0x00010000 and 0x001FFFFF
+                let addr = addr - 0x00010000;
                 Ok(self.ram[addr as usize])
             }
             // KSEG0 - Cache enabled
-            0x80100000..=0x801FFFFF => {
-                let addr = addr - 0x80100000;
+            0x80010000..=0x801FFFFF => {
+                let addr = addr - 0x80010000;
                 Ok(self.ram[addr as usize])
             }
             // KSEG1 - No Cache
-            0xA0100000..=0xA01FFFFF => {
-                let addr = addr - 0xA0100000;
+            0xA0010000..=0xA01FFFFF => {
+                let addr = addr - 0xA0010000;
                 Ok(self.ram[addr as usize])
             }
             // KUSEG ROM
             0x1F000000..=0x1F00FFFF => {
-                todo!()
+                let addr = addr - 0x1F000000;
+                Ok(self.expansion1[addr as usize])
             }
             // KSEG0 ROM
             0x9F000000..=0x9F00FFFF => {
-                todo!()
+                let addr = addr - 0x9F000000;
+                Ok(self.expansion1[addr as usize])
             }
             // KSEG1 ROM
             0xBF000000..=0xBF00FFFF => {
-                todo!()
+                let addr = addr - 0xBF000000;
+                Ok(self.expansion1[addr as usize])
             }
             // KUSEG Scratchpad
             0x1F800000..=0x1F8003FF => {
@@ -114,6 +123,56 @@ impl Bus {
                 Ok(self.kernel_rom[addr as usize])
             }
             // IO Register
+            // Expansion 1 Base Address
+            0x1F801000 => Ok(0x00),
+            0x1F801001 => Ok(0x00),
+            0x1F801002 => Ok(0x00),
+            0x1F801003 => Ok(0x1F),
+            // Expansion 2 Base
+            0x1F801004 => Ok(0x00),
+            0x1F801005 => Ok(0x20),
+            0x1F801006 => Ok(0x80),
+            0x1F801007 => Ok(0x1F),
+            // Expansion 1 Delay/Size
+            0x1F801008 => Ok(0x3F),
+            0x1F801009 => Ok(0x24),
+            0x1F80100A => Ok(0x13),
+            0x1F80100B => Ok(0x00),
+            // Expansion 3 Delay/Size
+            0x1F80100C => Ok(0x22),
+            0x1F80100D => Ok(0x30),
+            0x1F80100E => Ok(0x00),
+            0x1F80100F => Ok(0x00),
+            // BIOS ROM
+            0x1F801010 => Ok(0x3F),
+            0x1F801011 => Ok(0x24),
+            0x1F801012 => Ok(0x13),
+            0x1F801013 => Ok(0x00),
+            // SPU DELAY
+            0x1F801014 => Ok(0xE1),
+            0x1F801015 => Ok(0x31),
+            0x1F801016 => Ok(0x09),
+            0x1F801017 => Ok(0x20),
+            // CDROM DELAY
+            0x1F801018 => Ok(0x43),
+            0x1F801019 => Ok(0x08),
+            0x1F80101A => Ok(0x02),
+            0x1F80101B => Ok(0x00),
+            // Expansion 2 Delay/Size
+            0x1F80101C => Ok(0x77),
+            0x1F80101D => Ok(0x07),
+            0x1F80101E => Ok(0x07),
+            0x1F80101F => Ok(0x00),
+            // COMMON Delay
+            0x1F801020 => Ok(0x25),
+            0x1F801021 => Ok(0x11),
+            0x1F801022 => Ok(0x03),
+            0x1F801023 => Ok(0x00),
+            // RAM SIZE
+            0x1F801060 => Ok(0x88),
+            0x1F801061 => Ok(0x0B),
+            0x1F801062 => Ok(0x00),
+            0x1F801063 => Ok(0x00),
             // I_STAT - Interrupt status
             0x1F801070 => Ok((self.interrupts.stat & 0xFF) as u8),
             0x1F801071 => Ok(((self.interrupts.stat & 0xFF00) >> 8) as u8),
@@ -174,11 +233,20 @@ impl Bus {
             0xFFFE0000..=0xFFFE01FF => {
                 todo!()
             }
-            _ => Err(ExceptionType::BusErrorLoad),
+            _ => {
+                event!(Level::WARN, "Address {:08X} not implemented yet (read)", addr);
+                Err(ExceptionType::BusErrorLoad(addr))
+            }
         }
     }
 
     pub fn mem_write_byte(&mut self, addr: u32, val: u8) -> Result<(), ExceptionType> {
+        event!(
+            Level::TRACE,
+            "Attempt to write at address: {:08X} with {:02X}",
+            addr,
+            val
+        );
         match addr {
             // KUSEG Kernel
             0x00000000..=0x0000FFFF => {
@@ -218,15 +286,18 @@ impl Bus {
             }
             // KUSEG ROM
             0x1F000000..=0x1F00FFFF => {
-                todo!()
+                // Don't write to ROM?
+                Ok(())
             }
             // KSEG0 ROM
             0x9F000000..=0x9F00FFFF => {
-                todo!()
+                // Don't write to ROM?
+                Ok(())
             }
             // KSEG1 ROM
             0xBF000000..=0xBF00FFFF => {
-                todo!()
+                // Don't write to ROM?
+                Ok(())
             }
             // KUSEG Scratchpad
             0x1F800000..=0x1F8003FF => {
@@ -258,6 +329,57 @@ impl Bus {
                 self.kernel_rom[addr as usize] = val;
                 Ok(())
             }
+            // IO Registers
+            // Expansion 1 Base Address
+            0x1F801000 => Ok(()),
+            0x1F801001 => Ok(()),
+            0x1F801002 => Ok(()),
+            0x1F801003 => Ok(()),
+            // Expansion 2 Base
+            0x1F801004 => Ok(()),
+            0x1F801005 => Ok(()),
+            0x1F801006 => Ok(()),
+            0x1F801007 => Ok(()),
+            // Expansion 1 Delay/Size
+            0x1F801008 => Ok(()),
+            0x1F801009 => Ok(()),
+            0x1F80100A => Ok(()),
+            0x1F80100B => Ok(()),
+            // Expansion 3 Delay/Size
+            0x1F80100C => Ok(()),
+            0x1F80100D => Ok(()),
+            0x1F80100E => Ok(()),
+            0x1F80100F => Ok(()),
+            // BIOS ROM
+            0x1F801010 => Ok(()),
+            0x1F801011 => Ok(()),
+            0x1F801012 => Ok(()),
+            0x1F801013 => Ok(()),
+            // SPU DELAY
+            0x1F801014 => Ok(()),
+            0x1F801015 => Ok(()),
+            0x1F801016 => Ok(()),
+            0x1F801017 => Ok(()),
+            // CDROM DELAY
+            0x1F801018 => Ok(()),
+            0x1F801019 => Ok(()),
+            0x1F80101A => Ok(()),
+            0x1F80101B => Ok(()),
+            // Expansion 2 Delay/Size
+            0x1F80101C => Ok(()),
+            0x1F80101D => Ok(()),
+            0x1F80101E => Ok(()),
+            0x1F80101F => Ok(()),
+            // COMMON DELAY
+            0x1F801020 => Ok(()),
+            0x1F801021 => Ok(()),
+            0x1F801022 => Ok(()),
+            0x1F801023 => Ok(()),
+            // RAM SIZE
+            0x1F801060 => Ok(()),
+            0x1F801061 => Ok(()),
+            0x1F801062 => Ok(()),
+            0x1F801063 => Ok(()),
             // I_STAT
             0x1F801070 => {
                 self.interrupts.stat = (self.interrupts.stat & 0xFFFFFF00) + val as u32;
@@ -408,7 +530,10 @@ impl Bus {
             0xFFFE0000..=0xFFFE01FF => {
                 todo!()
             }
-            _ => Err(ExceptionType::BusErrorLoad),
+            _ => {
+                event!(Level::WARN, "Address {:08X} not implemented yet (write with {:02X})", addr, val);
+                Err(ExceptionType::BusErrorLoad(addr))
+            }
         }
     }
 
@@ -439,9 +564,9 @@ impl Bus {
             _ => {
                 let [b0, b1, b2, b3] = val.to_le_bytes();
                 self.mem_write_byte(addr, b0)?;
-                self.mem_write_byte(addr, b1)?;
-                self.mem_write_byte(addr, b2)?;
-                self.mem_write_byte(addr, b3)?;
+                self.mem_write_byte(addr + 1, b1)?;
+                self.mem_write_byte(addr + 2, b2)?;
+                self.mem_write_byte(addr + 3, b3)?;
                 Ok(())
             }
         }

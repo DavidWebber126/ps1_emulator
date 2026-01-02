@@ -1,5 +1,9 @@
+use core::fmt;
+
 use crate::bus::Bus;
 use crate::cop0::Cop0;
+
+use tracing::{Level, event, span};
 
 pub struct Registers {
     registers: [u32; 32],
@@ -13,7 +17,7 @@ impl Registers {
     pub fn new() -> Self {
         Self {
             registers: [0; 32],
-            program_counter: 0,
+            program_counter: 0xBFC00000,
             hi: 0,
             lo: 0,
             delayed_branch: None,
@@ -23,17 +27,30 @@ impl Registers {
     fn read(&self, reg: u32) -> u32 {
         match reg {
             0 => 0,
-            1..31 => self.registers[reg as usize],
-            _ => panic!("Impossible"),
+            1..=31 => self.registers[reg as usize],
+            _ => panic!("Impossible register value"),
         }
     }
 
     fn write(&mut self, reg: u32, val: u32) {
         match reg {
             0 => {}
-            1..31 => self.registers[reg as usize] = val,
-            _ => panic!("Impossible"),
+            1..=31 => self.registers[reg as usize] = val,
+            _ => panic!("Impossible register value"),
         }
+    }
+}
+
+impl fmt::Display for Registers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PC: {:08X}   ", self.program_counter)?;
+        for (i, val) in self.registers.iter().enumerate() {
+            write!(f, "r{:02}:{:08X}", i, val)?;
+            if i != 31 {
+                write!(f, " ")?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -46,7 +63,7 @@ pub enum ExceptionType {
     AddressErrorLoad(u32),  // Address Error, data load or instruction fetch
     AddressErrorStore(u32), // Address Error, data store
     //BusErrorFetch,       // Bus error on instruction fetch
-    BusErrorLoad,        // Bus error on data load/store
+    BusErrorLoad(u32),   // Bus error on data load/store
     Syscall,             // Syscall
     Break,               // Breakpoint
     Reserved,            // Reserved Instruction
@@ -65,6 +82,7 @@ impl Cpu {
         let registers = Registers::new();
         let bus = Bus::new();
         let cop0 = Cop0::new();
+
         Self {
             cop0,
             registers,
@@ -72,7 +90,62 @@ impl Cpu {
         }
     }
 
+    pub fn load_bios(&mut self, bios: &[u8]) {
+        self.bus.kernel_rom[0..0x80000].clone_from_slice(bios);
+    }
+
+    pub fn sideload_exe(&mut self, exe: &[u8], tty_check: bool) {
+        while self.registers.program_counter != 0x80030000 {
+            self.step_instruction();
+
+            if tty_check {
+                self.check_for_tty_output();
+            }
+        }
+
+        let initial_pc = u32::from_le_bytes(exe[0x10..0x14].try_into().unwrap());
+        let initial_r28 = u32::from_le_bytes(exe[0x14..0x18].try_into().unwrap());
+        let exe_ram_addr = u32::from_le_bytes(exe[0x18..0x1C].try_into().unwrap()) & 0x1FFFFF;
+        let exe_size = u32::from_le_bytes(exe[0x1C..0x20].try_into().unwrap());
+        let initial_sp = u32::from_le_bytes(exe[0x30..0x34].try_into().unwrap());
+
+        event!(
+            Level::INFO,
+            "Initial PC: 0x{:08X}, Initial r28: 0x{:08X}, Initial SP: 0x{:08X}, EXE RAM ADDR: 0x{:08X}, EXE Size: 0x{:08X}",
+            initial_pc,
+            initial_r28,
+            initial_sp,
+            exe_ram_addr,
+            exe_size
+        );
+
+        //let exe_size = exe_size_2kb * 2048;
+        //println!("Initial PC: {:X}. Initial R28: {:X}", initial_pc, initial_r28);
+        //println!("EXE starting address: {:X}. EXE size {:X}", exe_ram_addr, exe_size);
+        self.bus.ram[exe_ram_addr as usize..(exe_ram_addr + exe_size) as usize]
+            .copy_from_slice(&exe[2048..2048 + exe_size as usize]);
+
+        self.registers.registers[28] = initial_r28;
+        if initial_sp != 0 {
+            self.registers.registers[29] = initial_sp;
+            self.registers.registers[30] = initial_sp;
+        }
+
+        self.registers.program_counter = initial_pc;
+    }
+
+    pub fn check_for_tty_output(&self) {
+        let pc = self.registers.program_counter & 0x1FFFFFFF;
+        if (pc == 0xA0 && self.registers.registers[9] == 0x3C)
+            || (pc == 0xB0 && self.registers.registers[9] == 0x3D)
+        {
+            let ch = self.registers.registers[4] as u8 as char;
+            print!("{ch}");
+        }
+    }
+
     fn handle_exception(&mut self, exception: ExceptionType, in_delay_slot: bool) {
+        event!(Level::TRACE, "Exception Occured: {:?}", exception);
         // Store PC in EPC register (unless currently in Branch Delay in which case store PC - 4)
         if in_delay_slot {
             self.cop0.epc = self.registers.program_counter - 4;
@@ -107,6 +180,17 @@ impl Cpu {
     }
 
     pub fn step_instruction(&mut self) {
+        let span = span!(
+            Level::DEBUG,
+            "CPU Step",
+            pc = self.registers.program_counter
+        );
+        let _enter = span.enter();
+        event!(
+            Level::DEBUG,
+            "{}",
+            self.registers,
+        );
         // Check for interrupts
         // Set cause bit (or clear it) if a hardware interrupt is ready
         self.cop0
@@ -158,12 +242,14 @@ impl Cpu {
         match opcode {
             // ADDI
             0x20000000..=0x20FFFFFF => {
-                let reg = (opcode & 0x03E00000) >> 21;
+                let rs = (opcode & 0x03E00000) >> 21;
                 let imm = (opcode & 0x0000FFFF) as i16;
-                let target = (opcode & 0x001F0000) >> 16;
+                let rt = (opcode & 0x001F0000) >> 16;
 
-                let (sum, err) = Cpu::add(self.registers.read(reg), (imm as i32) as u32);
-                self.registers.write(target, sum);
+                let (sum, err) = Cpu::add(self.registers.read(rs), (imm as i32) as u32);
+                self.registers.write(rt, sum);
+
+                event!(Level::DEBUG, "ADDI ${rt}, ${rs}, {:04X}", imm);
 
                 if err {
                     Err(ExceptionType::ArithmeticOverflow)
@@ -172,36 +258,40 @@ impl Cpu {
                 }
             }
             // ADDIU
-            0x21000000..=0x21FFFFFF => {
-                let reg = (opcode & 0x03E00000) >> 21;
+            0x24000000..=0x27FFFFFF => {
+                let rs = (opcode & 0x03E00000) >> 21;
                 let imm = (opcode & 0x0000FFFF) as i16;
-                let target = (opcode & 0x001F0000) >> 16;
+                let rt = (opcode & 0x001F0000) >> 16;
 
-                self.registers.write(
-                    target,
-                    Cpu::addu(self.registers.read(reg), (imm as i32) as u32),
-                );
+                event!(Level::DEBUG, "ADDIU ${rt}, ${rs}, {:04X}", imm);
+
+                self.registers
+                    .write(rt, Cpu::addu(self.registers.read(rs), (imm as i32) as u32));
 
                 Ok(())
             }
             // ANDI
             0x30000000..=0x33FFFFFF => {
-                let reg = (opcode & 0x03E00000) >> 21;
+                let rs = (opcode & 0x03E00000) >> 21;
                 let imm = (opcode & 0x0000FFFF) as i16;
-                let target = (opcode & 0x001F0000) >> 16;
+                let rt = (opcode & 0x001F0000) >> 16;
+
+                event!(Level::DEBUG, "ANDI ${rt}, ${rs}, {:04X}", imm);
 
                 self.registers
-                    .write(target, self.registers.read(reg) & ((imm as i32) as u32));
+                    .write(rt, self.registers.read(rs) & ((imm as i32) as u32));
 
                 Ok(())
             }
             // BEQ - Branch on equal
             0x10000000..=0x13000000 => {
-                let source = (opcode & 0x03E00000) >> 21;
+                let rs = (opcode & 0x03E00000) >> 21;
                 let imm = (opcode & 0x0000FFFF) as i16;
-                let target = (opcode & 0x001F0000) >> 16;
+                let rt = (opcode & 0x001F0000) >> 16;
 
-                if self.registers.read(source) == self.registers.read(target) {
+                event!(Level::DEBUG, "BEQ ${rt}, ${rs}, {:04X}", imm);
+
+                if self.registers.read(rs) == self.registers.read(rt) {
                     let offset = (imm as i32) << 2;
                     self.registers.delayed_branch =
                         Some(self.registers.program_counter.wrapping_add(offset as u32));
@@ -214,7 +304,7 @@ impl Cpu {
             // BLTZ - Branch on less than zero. Name = 0b00000
             // BLTZAL - Branch on less than zero and link. Name = 0b10000
             0x04000000..=0x07FFFFFF => {
-                let reg = (opcode & 0x03E00000) >> 21;
+                let rs = (opcode & 0x03E00000) >> 21;
                 let name = (opcode & 0x001F0000) >> 16;
                 let imm = (opcode & 0x0000FFFF) as i16;
 
@@ -224,20 +314,30 @@ impl Cpu {
                 }
 
                 // Both conditions true then BGEZ/BGEZAL, if both false then BLTZ/BLTZAL
-                if (name & 0x1 > 0) == (self.registers.read(reg) & 0x80000000 == 0) {
+                if (name & 0x1 > 0) == (self.registers.read(rs) & 0x80000000 == 0) {
                     let offset = (imm as i32) << 2;
                     self.registers.delayed_branch =
                         Some(self.registers.program_counter.wrapping_add(offset as u32));
+                }
+
+                match name {
+                    0 => event!(Level::DEBUG, "BLTZ ${rs}, {:04X}", imm),
+                    1 => event!(Level::DEBUG, "BGEZ ${rs}, {:04X}", imm),
+                    16 => event!(Level::DEBUG, "BLTZAL ${rs}, {:04X}", imm),
+                    17 => event!(Level::DEBUG, "BGEZAL ${rs}, {:04X}", imm),
+                    _ => panic!("Impossible"),
                 }
 
                 Ok(())
             }
             // BGTZ - Branch on greater than or equal to zero
             0x1C000000..=0x1FFFFFFF => {
-                let reg = (opcode & 0x03E00000) >> 21;
+                let rs = (opcode & 0x03E00000) >> 21;
                 let imm = (opcode & 0x0000FFFF) as i16;
 
-                if self.registers.read(reg) & 0x80000000 == 0 && self.registers.read(reg) > 0 {
+                event!(Level::DEBUG, "BGEZ ${rs}, {:04X}", imm);
+
+                if self.registers.read(rs) & 0x80000000 == 0 && self.registers.read(rs) > 0 {
                     let offset = (imm as i32) << 2;
                     self.registers.delayed_branch =
                         Some(self.registers.program_counter.wrapping_add(offset as u32));
@@ -247,11 +347,13 @@ impl Cpu {
             }
             // BNE
             0x14000000..=0x17FFFFFF => {
-                let source = (opcode & 0x03E00000) >> 21;
+                let rs = (opcode & 0x03E00000) >> 21;
                 let imm = (opcode & 0x0000FFFF) as i16;
-                let target = (opcode & 0x001F0000) >> 16;
+                let rt = (opcode & 0x001F0000) >> 16;
 
-                if self.registers.read(source) != self.registers.read(target) {
+                event!(Level::DEBUG, "BNE ${rs}, ${rt}, {:X}", imm);
+
+                if self.registers.read(rs) != self.registers.read(rt) {
                     let offset = (imm as i32) << 2;
                     self.registers.delayed_branch =
                         Some(self.registers.program_counter.wrapping_add(offset as u32));
@@ -261,16 +363,20 @@ impl Cpu {
             }
             // JUMP
             0x08000000..=0x0BFFFFFF => {
-                let target = (opcode & 0x03FFFFFF) << 2;
+                let target = opcode & 0x03FFFFFF;
+
+                event!(Level::DEBUG, "J {:X}", target);
 
                 self.registers.delayed_branch =
-                    Some((self.registers.program_counter & 0x0FFFFFFF) | target);
+                    Some((self.registers.program_counter & 0xF0000000) | (target << 2));
 
                 Ok(())
             }
             // JAL - Jump and Link
             0x0C000000..=0x0FFFFFFF => {
                 let target = (opcode & 0x03FFFFFF) << 2;
+
+                event!(Level::DEBUG, "JAL {:X}", target);
 
                 self.registers.registers[31] = self.registers.program_counter + 8;
                 self.registers.delayed_branch =
@@ -284,6 +390,8 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
+                event!(Level::DEBUG, "LB ${rt}, {:04X}({:02X})", offset, base);
+
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 let data = self.bus.mem_read_byte(addr)? as i8;
                 self.registers.write(rt, data as i32 as u32);
@@ -295,6 +403,8 @@ impl Cpu {
                 let base = (opcode & 0x03E00000) >> 21;
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
+
+                event!(Level::DEBUG, "LBU ${rt}, {:04X}({:02X})", offset, base);
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 let data = self.bus.mem_read_byte(addr)?;
@@ -308,6 +418,8 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
+                event!(Level::DEBUG, "LH ${rt}, {:04X}({:02X})", offset, base);
+
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 let halfword = self.bus.mem_read_halfword(addr)? as i16;
                 self.registers.write(rt, halfword as i32 as u32);
@@ -320,6 +432,8 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
+                event!(Level::DEBUG, "LHU ${rt}, {:04X}({:02X})", offset, base);
+
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 self.registers
                     .write(rt, self.bus.mem_read_halfword(addr)? as u32);
@@ -328,10 +442,12 @@ impl Cpu {
             }
             // LUI - Load Upper Immediate
             0x3C000000..=0x3C1FFFFF => {
-                let target = (opcode & 0x001F0000) >> 16;
-                let imm = (opcode & 0x0000FFFF) << 16;
+                let rt = (opcode & 0x001F0000) >> 16;
+                let imm = opcode & 0x0000FFFF;
 
-                self.registers.write(target, imm);
+                event!(Level::DEBUG, "LUI ${rt}, {:04X}", imm);
+
+                self.registers.write(rt, imm << 16);
 
                 Ok(())
             }
@@ -340,6 +456,8 @@ impl Cpu {
                 let base = (opcode & 0x03E00000) >> 21;
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
+
+                event!(Level::DEBUG, "LW ${rt}, {:04X}({:02X})", offset, base);
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 self.registers.write(rt, self.bus.mem_read_word(addr)?);
@@ -351,6 +469,8 @@ impl Cpu {
                 let base = (opcode & 0x03E00000) >> 21;
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
+
+                event!(Level::DEBUG, "LWL ${rt}, {:04X}({:02X})", offset, base);
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32) as usize;
                 let [b0, b1, b2, b3] = self
@@ -382,6 +502,8 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
+                event!(Level::DEBUG, "LWR ${rt}, {:04X}({:02X})", offset, base);
+
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32) as usize;
                 let [b0, b1, b2, b3] = self
                     .bus
@@ -408,23 +530,26 @@ impl Cpu {
             }
             // ORI - Or Immediate
             0x34000000..=0x37FFFFFF => {
-                let source = (opcode & 0x03E00000) >> 21;
-                let target = (opcode & 0x001F0000) >> 16;
+                let rs = (opcode & 0x03E00000) >> 21;
+                let rt = (opcode & 0x001F0000) >> 16;
                 let imm = opcode & 0x0000FFFF;
 
-                self.registers
-                    .write(target, self.registers.read(source) | imm);
+                event!(Level::DEBUG, "ORI ${rt}, ${rs}, {:04X}", imm);
+
+                self.registers.write(rt, self.registers.read(rs) | imm);
 
                 Ok(())
             }
             // SB - Store Byte
             0xA0000000..=0xA3FFFFFF => {
                 let base = (opcode & 0x03E00000) >> 21;
-                let target = (opcode & 0x001F0000) >> 16;
+                let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
+                event!(Level::DEBUG, "LWR ${rt}, {:04X}({:02X})", offset, base);
+
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
-                let byte = (self.registers.read(target) & 0x000000FF) as u8;
+                let byte = (self.registers.read(rt) & 0x000000FF) as u8;
                 self.bus.mem_write_byte(addr, byte)?;
 
                 Ok(())
@@ -432,12 +557,14 @@ impl Cpu {
             // SH - Store Halfword
             0xA4000000..=0xA7FFFFFF => {
                 let base = (opcode & 0x03E00000) >> 21;
-                let target = (opcode & 0x001F0000) >> 16;
+                let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
+
+                event!(Level::DEBUG, "SH ${rt}, {:04X}({:02X})", offset, base);
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 if addr.is_multiple_of(2) {
-                    let halfbyte = (self.registers.read(target) & 0x0000FFFF) as u16;
+                    let halfbyte = (self.registers.read(rt) & 0x0000FFFF) as u16;
                     self.bus.mem_write_halfword(addr, halfbyte)?;
                     Ok(())
                 } else {
@@ -449,6 +576,8 @@ impl Cpu {
                 let rs = (opcode & 0x03E00000) >> 21;
                 let rt = (opcode & 0x001F0000) >> 16;
                 let imm = (opcode & 0x0000FFFF) as i16;
+
+                event!(Level::DEBUG, "SLTI ${rt}, ${rs}, {:04X}", imm);
 
                 if (self.registers.read(rs) as i32) < imm as i32 {
                     self.registers.write(rt, 1);
@@ -464,6 +593,8 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let imm = (opcode & 0x0000FFFF) as i16;
 
+                event!(Level::DEBUG, "SLTIU ${rt}, ${rs}, {:04X}", imm);
+
                 if self.registers.read(rs) < (imm as i32) as u32 {
                     self.registers.write(rt, 1);
                 } else {
@@ -478,6 +609,8 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
+                event!(Level::DEBUG, "SW ${rt}, {:04X}(${})", offset, base);
+
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 if addr.is_multiple_of(4) {
                     self.bus.mem_write_word(addr, self.registers.read(rt))?;
@@ -491,6 +624,8 @@ impl Cpu {
                 let base = (opcode & 0x03E00000) >> 21;
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
+
+                event!(Level::DEBUG, "SWL ${rt}, {:04X}({:02X})", offset, base);
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 let [b0, b1, b2, b3] = self.registers.read(rt).to_le_bytes();
@@ -524,6 +659,8 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
+                event!(Level::DEBUG, "SWR ${rt}, {:04X}({:02X})", offset, base);
+
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 let [b0, b1, b2, b3] = self.registers.read(rt).to_le_bytes();
                 match addr % 4 {
@@ -555,6 +692,8 @@ impl Cpu {
                 let rs = (opcode & 0x03E00000) >> 21;
                 let rt = (opcode & 0x001F0000) >> 16;
                 let imm = opcode & 0x0000FFFF;
+
+                event!(Level::DEBUG, "SLTIU ${rt}, ${rs}, {:04X}", imm);
 
                 self.registers.write(rt, self.registers.read(rs) ^ imm);
 
@@ -691,12 +830,14 @@ impl Cpu {
             // Special
             // ADD
             op if op & 0xFC00003F == 0x00000020 => {
-                let reg1 = (opcode & 0x03E00000) >> 21;
-                let reg2 = (opcode & 0x001F0000) >> 16;
-                let target = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode & 0x03E00000) >> 21;
+                let rt = (opcode & 0x001F0000) >> 16;
+                let rd = (opcode & 0x0000F800) >> 11;
 
-                let (sum, err) = Cpu::add(self.registers.read(reg1), self.registers.read(reg2));
-                self.registers.write(target, sum);
+                event!(Level::DEBUG, "ADD ${rd}, ${rs}, ${rt}");
+
+                let (sum, err) = Cpu::add(self.registers.read(rs), self.registers.read(rt));
+                self.registers.write(rd, sum);
 
                 if err {
                     Err(ExceptionType::ArithmeticOverflow)
@@ -706,37 +847,44 @@ impl Cpu {
             }
             // ADDU
             op if op & 0xFC00003F == 0x00000021 => {
-                let reg1 = (opcode & 0x03E00000) >> 21;
-                let reg2 = (opcode & 0x001F0000) >> 16;
-                let target = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode & 0x03E00000) >> 21;
+                let rt = (opcode & 0x001F0000) >> 16;
+                let rd = (opcode & 0x0000F800) >> 11;
 
-                let sum = Cpu::addu(self.registers.read(reg1), self.registers.read(reg2));
-                self.registers.write(target, sum);
+                event!(Level::DEBUG, "ADDU ${rd}, ${rs}, ${rt}");
+
+                let sum = Cpu::addu(self.registers.read(rs), self.registers.read(rt));
+                self.registers.write(rd, sum);
 
                 Ok(())
             }
             // AND
             op if op & 0xFC00003F == 0x00000024 => {
-                let reg1 = (opcode & 0x03E00000) >> 21;
-                let reg2 = (opcode & 0x001F0000) >> 16;
-                let target = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode & 0x03E00000) >> 21;
+                let rt = (opcode & 0x001F0000) >> 16;
+                let rd = (opcode & 0x0000F800) >> 11;
 
-                self.registers.write(
-                    target,
-                    self.registers.read(reg1) & self.registers.read(reg2),
-                );
+                event!(Level::DEBUG, "AND ${rd}, ${rs}, ${rt}");
+
+                self.registers
+                    .write(rd, self.registers.read(rs) & self.registers.read(rt));
 
                 Ok(())
             }
             // BREAK
-            op if op & 0xFC00003F == 0x0000000D => Err(ExceptionType::Break),
+            op if op & 0xFC00003F == 0x0000000D => {
+                event!(Level::DEBUG, "BREAK");
+                Err(ExceptionType::Break)
+            }
             // DIV
             op if op & 0xFC00003F == 0x0000001A => {
-                let reg1 = (opcode & 0x03E00000) >> 21;
-                let reg2 = (opcode & 0x001F0000) >> 16;
+                let rs = (opcode & 0x03E00000) >> 21;
+                let rt = (opcode & 0x001F0000) >> 16;
 
-                let dividend = self.registers.read(reg1) as i32;
-                let divisor = self.registers.read(reg2) as i32;
+                event!(Level::DEBUG, "DIV ${rs}, ${rt}");
+
+                let dividend = self.registers.read(rs) as i32;
+                let divisor = self.registers.read(rt) as i32;
                 if divisor == 0 {
                     self.registers.hi = dividend as u32;
                 } else {
@@ -748,11 +896,13 @@ impl Cpu {
             }
             // DIVU
             op if op & 0xFC00003F == 0x0000001B => {
-                let reg1 = (opcode & 0x03E00000) >> 21;
-                let reg2 = (opcode & 0x001F0000) >> 16;
+                let rs = (opcode & 0x03E00000) >> 21;
+                let rt = (opcode & 0x001F0000) >> 16;
 
-                let dividend = self.registers.read(reg1);
-                let divisor = self.registers.read(reg2);
+                event!(Level::DEBUG, "DIVU ${rs}, ${rt}");
+
+                let dividend = self.registers.read(rs);
+                let divisor = self.registers.read(rt);
                 self.registers.lo = dividend / divisor;
                 self.registers.hi = dividend % divisor;
 
@@ -760,20 +910,24 @@ impl Cpu {
             }
             // JALR - Jump and Link Register
             op if op & 0xFC00003F == 0x00000009 => {
-                let source_reg = (opcode & 0x03E00000) >> 21;
-                let delay_reg = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode & 0x03E00000) >> 21;
+                let rd = (opcode & 0x0000F800) >> 11;
 
-                let addr = self.registers.read(source_reg);
-                self.registers
-                    .write(delay_reg, self.registers.program_counter + 8);
+                event!(Level::DEBUG, "JALR ${rd}, ${rs}");
+
+                let addr = self.registers.read(rs);
+                self.registers.write(rd, self.registers.program_counter + 8);
                 self.registers.delayed_branch = Some(addr);
 
                 Ok(())
             }
             // JR
             op if op & 0xFC00003F == 0x00000008 => {
-                let source_reg = (opcode & 0x03E00000) >> 21;
-                let target = self.registers.read(source_reg);
+                let rs = (opcode & 0x03E00000) >> 21;
+                let target = self.registers.read(rs);
+
+                event!(Level::DEBUG, "JR ${rs}");
+
                 if target & 0b11 == 0 {
                     self.registers.delayed_branch = Some(target);
                 }
@@ -782,39 +936,49 @@ impl Cpu {
             }
             // MFHI - Move From HI
             op if op & 0xFFFF07FF == 0x00000010 => {
-                let reg = (opcode & 0x0000F800) >> 11;
-                self.registers.write(reg, self.registers.hi);
+                let rd = (opcode & 0x0000F800) >> 11;
+                self.registers.write(rd, self.registers.hi);
+
+                event!(Level::DEBUG, "MFHI ${rd}");
 
                 Ok(())
             }
             // MFLO - Move From LO
             op if op & 0xFFFF07FF == 0x00000012 => {
-                let reg = (opcode & 0x0000F800) >> 11;
-                self.registers.write(reg, self.registers.lo);
+                let rd = (opcode & 0x0000F800) >> 11;
+                self.registers.write(rd, self.registers.lo);
+
+                event!(Level::DEBUG, "MFHI ${rd}");
 
                 Ok(())
             }
             // MTHI - Move To HI
             op if op & 0xFC1FFFFF == 0x00000011 => {
-                let reg = (opcode & 0x03E00000) >> 21;
-                self.registers.hi = self.registers.read(reg);
+                let rs = (opcode & 0x03E00000) >> 21;
+                self.registers.hi = self.registers.read(rs);
+
+                event!(Level::DEBUG, "MFHI ${rs}");
 
                 Ok(())
             }
             // MTLO - Move To LO
             op if op & 0xFC1FFFFF == 0x00000013 => {
-                let reg = (opcode & 0x03E00000) >> 21;
-                self.registers.lo = self.registers.read(reg);
+                let rs = (opcode & 0x03E00000) >> 21;
+                self.registers.lo = self.registers.read(rs);
+
+                event!(Level::DEBUG, "MFHI ${rs}");
 
                 Ok(())
             }
             // MULT - Multiply Word
             op if op & 0xFC00FFFF == 0x00000018 => {
-                let reg1 = (opcode & 0x03E00000) >> 21;
-                let reg2 = (opcode & 0x001F0000) >> 16;
+                let rs = (opcode & 0x03E00000) >> 21;
+                let rt = (opcode & 0x001F0000) >> 16;
 
-                let arg1 = self.registers.read(reg1) as i32;
-                let arg2 = self.registers.read(reg2) as i32;
+                event!(Level::DEBUG, "MULT ${rs}, ${rt}");
+
+                let arg1 = self.registers.read(rs) as i32;
+                let arg2 = self.registers.read(rt) as i32;
                 let product = (arg1 as i64 * arg2 as i64) as u64;
 
                 self.registers.lo = (product & 0x00000000FFFFFFFF) as u32;
@@ -824,11 +988,13 @@ impl Cpu {
             }
             // MULTU - Multiply Unsigned Word
             op if op & 0xFC00FFFF == 0x00000019 => {
-                let reg1 = (opcode & 0x03E00000) >> 21;
-                let reg2 = (opcode & 0x001F0000) >> 16;
+                let rs = (opcode & 0x03E00000) >> 21;
+                let rt = (opcode & 0x001F0000) >> 16;
 
-                let arg1 = self.registers.read(reg1) as u64;
-                let arg2 = self.registers.read(reg2) as u64;
+                event!(Level::DEBUG, "MULTU ${rs}, ${rt}");
+
+                let arg1 = self.registers.read(rs) as u64;
+                let arg2 = self.registers.read(rt) as u64;
                 let product = arg1 * arg2;
 
                 self.registers.lo = (product & 0x00000000FFFFFFFF) as u32;
@@ -838,27 +1004,27 @@ impl Cpu {
             }
             // NOR
             op if op & 0xFC0007FF == 0x00000027 => {
-                let reg1 = (opcode & 0x03E00000) >> 21;
-                let reg2 = (opcode & 0x001F0000) >> 16;
-                let target = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode & 0x03E00000) >> 21;
+                let rt = (opcode & 0x001F0000) >> 16;
+                let rd = (opcode & 0x0000F800) >> 11;
 
-                self.registers.write(
-                    target,
-                    !(self.registers.read(reg1) | self.registers.read(reg2)),
-                );
+                event!(Level::DEBUG, "NOR ${rd}, ${rs}, ${rt}");
+
+                self.registers
+                    .write(rd, !(self.registers.read(rs) | self.registers.read(rt)));
 
                 Ok(())
             }
             // OR
             op if op & 0xFC0007FF == 0x00000025 => {
-                let reg1 = (opcode & 0x03E00000) >> 21;
-                let reg2 = (opcode & 0x001F0000) >> 16;
-                let target = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode & 0x03E00000) >> 21;
+                let rt = (opcode & 0x001F0000) >> 16;
+                let rd = (opcode & 0x0000F800) >> 11;
 
-                self.registers.write(
-                    target,
-                    self.registers.read(reg1) | self.registers.read(reg2),
-                );
+                event!(Level::DEBUG, "OR ${rd}, ${rs}, ${rt}");
+
+                self.registers
+                    .write(rd, self.registers.read(rs) | self.registers.read(rt));
 
                 Ok(())
             }
@@ -867,6 +1033,8 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let rd = (opcode & 0x0000F800) >> 11;
                 let sa = (opcode & 0x000007C0) >> 6;
+
+                event!(Level::DEBUG, "SLL ${rd}, ${rt}, {sa}");
 
                 self.registers.write(rd, self.registers.read(rt) << sa);
 
@@ -877,6 +1045,8 @@ impl Cpu {
                 let rs = (opcode & 0x03E00000) >> 21;
                 let rt = (opcode & 0x001F0000) >> 16;
                 let rd = (opcode & 0x0000F800) >> 11;
+
+                event!(Level::DEBUG, "SLLV ${rd}, ${rt}, ${rs}");
 
                 let shift = self.registers.read(rs) & 0x7;
                 self.registers.write(rd, self.registers.read(rt) << shift);
@@ -889,6 +1059,8 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let rd = (opcode & 0x0000F800) >> 11;
 
+                event!(Level::DEBUG, "SLT ${rd}, ${rs}, ${rt}");
+
                 let result = (self.registers.read(rs) as i32) < self.registers.read(rt) as i32;
                 self.registers.write(rd, result as u32);
 
@@ -899,6 +1071,8 @@ impl Cpu {
                 let rs = (opcode & 0x03E00000) >> 21;
                 let rt = (opcode & 0x001F0000) >> 16;
                 let rd = (opcode & 0x0000F800) >> 11;
+
+                event!(Level::DEBUG, "SLTU ${rd}, ${rs}, ${rt}");
 
                 let result = self.registers.read(rs) < self.registers.read(rt);
                 self.registers.write(rd, result as u32);
@@ -911,6 +1085,8 @@ impl Cpu {
                 let rd = (opcode & 0x0000F800) >> 11;
                 let sa = (opcode & 0x000007C0) >> 6;
 
+                event!(Level::DEBUG, "SRA ${rd}, ${rt}, {sa}");
+
                 self.registers
                     .write(rd, ((self.registers.read(rt) as i32) >> sa) as u32);
 
@@ -921,6 +1097,8 @@ impl Cpu {
                 let rs = (opcode & 0x03E00000) >> 21;
                 let rt = (opcode & 0x001F0000) >> 16;
                 let rd = (opcode & 0x0000F800) >> 11;
+
+                event!(Level::DEBUG, "SRAV ${rd}, ${rt}, ${rs}");
 
                 let shift = self.registers.read(rs) & 0b11111;
                 self.registers
@@ -934,6 +1112,8 @@ impl Cpu {
                 let rd = (opcode & 0x0000F800) >> 11;
                 let sa = (opcode & 0x000007C0) >> 6;
 
+                event!(Level::DEBUG, "SRL ${rd}, ${rt}, {sa}");
+
                 self.registers.write(rd, self.registers.read(rt) >> sa);
 
                 Ok(())
@@ -943,6 +1123,8 @@ impl Cpu {
                 let rs = (opcode & 0x03E00000) >> 21;
                 let rt = (opcode & 0x001F0000) >> 16;
                 let rd = (opcode & 0x0000F800) >> 11;
+
+                event!(Level::DEBUG, "SRLV ${rd}, ${rt}, ${rs}");
 
                 let shift = self.registers.read(rs) & 0b11111;
                 self.registers.write(rd, self.registers.read(rt) >> shift);
@@ -954,6 +1136,8 @@ impl Cpu {
                 let rs = (opcode & 0x03E00000) >> 21;
                 let rt = (opcode & 0x001F0000) >> 16;
                 let rd = (opcode & 0x0000F800) >> 11;
+
+                event!(Level::DEBUG, "SUB ${rd}, ${rs}, {rt}");
 
                 let (diff, err) = Cpu::add(
                     self.registers.read(rs),
@@ -973,6 +1157,8 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let rd = (opcode & 0x0000F800) >> 11;
 
+                event!(Level::DEBUG, "SUB ${rd}, ${rs}, {rt}");
+
                 self.registers.write(
                     rd,
                     Cpu::addu(
@@ -984,19 +1170,27 @@ impl Cpu {
                 Ok(())
             }
             // SYSCALL
-            op if op & 0xFC00003F == 0x0000000C => Err(ExceptionType::Syscall),
+            op if op & 0xFC00003F == 0x0000000C => {
+                event!(Level::DEBUG, "SYSCALL");
+                Err(ExceptionType::Syscall)
+            }
             // XOR
             op if op & 0xFC0007FF == 0x00000026 => {
                 let rs = (opcode & 0x03E00000) >> 21;
                 let rt = (opcode & 0x001F0000) >> 16;
                 let rd = (opcode & 0x0000F800) >> 11;
 
+                event!(Level::DEBUG, "XOR ${rd}, ${rs}, {rt}");
+
                 self.registers
                     .write(rd, self.registers.read(rs) ^ self.registers.read(rt));
 
                 Ok(())
             }
-            _ => panic!(),
+            _ => {
+                event!(Level::ERROR, "Received {:08X} as opcode but no matching instruction", opcode);
+                panic!()
+            },
         }
     }
 

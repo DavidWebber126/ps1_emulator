@@ -97,7 +97,7 @@ impl CauseRegister {
             ExceptionType::Interrupt => 0,
             ExceptionType::AddressErrorLoad(_) => 4,
             ExceptionType::AddressErrorStore(_) => 5,
-            ExceptionType::BusErrorLoad => 7,
+            ExceptionType::BusErrorLoad(_) => 7,
             ExceptionType::Syscall => 8,
             ExceptionType::Break => 9,
             ExceptionType::Reserved => 0xA,

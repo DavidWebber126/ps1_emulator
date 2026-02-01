@@ -12,30 +12,19 @@ use std::path::PathBuf;
 use tracing_subscriber::fmt::layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, Layer, filter};
+use tracing_subscriber::{EnvFilter, Layer, filter, reload};
 
 //use cpu::Cpu;
 use frontend::MyApp;
 
 fn main() {
-    // let mut max_level = tracing::Level::DEBUG;
-    // for arg in env::args() {
-    //     match arg.as_str() {
-    //         "info" => max_level = tracing::Level::INFO,
-    //         "debug" => max_level = tracing::Level::DEBUG,
-    //         "trace" => max_level = tracing::Level::TRACE,
-    //         "error" => max_level = tracing::Level::ERROR,
-    //         "warn" => max_level = tracing::Level::WARN,
-    //         _ => {}
-    //     }
-    // }
-
     let log_file = OpenOptions::new()
         .write(true)
         .truncate(true)
         .open("logs/dbg.log")
         .unwrap_or(File::create("logs/dbg.log").unwrap());
 
+    // Layer to write to debug file
     let dbg_layer = layer()
         .with_writer(log_file)
         .with_ansi(false)
@@ -45,7 +34,11 @@ fn main() {
             (*metadata).target().contains("ps1_emulator")
         }));
 
-    let fmt_layer = tracing_subscriber::fmt::layer()
+    //let (dbg_filter, reload_handle) = reload::Layer::new(dbg_layer);
+    //print_type_of(&reload_handle);
+
+    // Layer to write to stdout
+    let fmt_layer = layer()
         .with_filter(filter::LevelFilter::INFO)
         .with_filter(filter::filter_fn(|metadata| {
             (*metadata).target().contains("ps1_emulator")
@@ -68,7 +61,8 @@ fn main() {
         options,
         Box::new(|cc| Ok(Box::<MyApp>::new(MyApp::new(cc, folder)))),
     );
-
-    // let mut cpu = Cpu::new();
-    // cpu.step_instruction();
 }
+
+// fn print_type_of<T>(_: &T) {
+//     println!("{}", std::any::type_name::<T>());
+// }

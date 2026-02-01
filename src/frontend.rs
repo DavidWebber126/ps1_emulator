@@ -3,6 +3,7 @@ use std::{fs, path::PathBuf};
 use crate::cpu::Cpu;
 use eframe::egui::{self, Color32, Event};
 use tracing::{Level, event};
+//use tracing_subscriber::{Layer, reload, filter::Filtered};
 
 pub struct GameSelect {
     pub filepaths: Vec<PathBuf>,
@@ -25,6 +26,7 @@ impl GameSelect {
 pub struct MyApp {
     cpu: Option<Cpu>,
     paused: bool,
+    //reload_handle: Handle<Filtered<Filtered<Layer<..., ..., ..., ...>, ..., ...>, ..., ...>, ...>,
     tty_output: bool,
     game_select: GameSelect,
     screen_texture: egui::TextureHandle,
@@ -32,10 +34,11 @@ pub struct MyApp {
 }
 
 impl MyApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, folder: PathBuf) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, folder: PathBuf, /*reload_handle: reload::Handle<tracing::level_filters::LevelFilter, impl Subscriber>*/) -> Self {
         Self {
             cpu: None,
             paused: false,
+            //reload_handle,
             tty_output: true,
             game_select: GameSelect::new(folder),
             screen_texture: cc.egui_ctx.load_texture(
@@ -121,6 +124,7 @@ impl eframe::App for MyApp {
 
                     // Load BIOS
                     event!(Level::INFO, "BIOS size is {:08X}", bios.len());
+                    println!("PC: BFC01960 is {:02X}{:02X}{:02X}{:02X}", bios[0x42F7], bios[0x42F6], bios[0x42F5], bios[0x42F4]);
                     cpu.load_bios(&bios);
 
                     // Load exe

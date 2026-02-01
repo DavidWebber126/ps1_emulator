@@ -1,7 +1,6 @@
 use core::fmt;
 
 use crate::bus::Bus;
-use crate::cop0::Cop0;
 
 use tracing::{Level, event, span};
 
@@ -72,7 +71,6 @@ pub enum ExceptionType {
 }
 
 pub struct Cpu {
-    pub cop0: Cop0,
     pub registers: Registers,
     pub bus: Bus,
 }
@@ -81,10 +79,8 @@ impl Cpu {
     pub fn new() -> Self {
         let registers = Registers::new();
         let bus = Bus::new();
-        let cop0 = Cop0::new();
 
         Self {
-            cop0,
             registers,
             bus,
         }
@@ -148,31 +144,31 @@ impl Cpu {
         event!(Level::TRACE, "Exception Occured: {:?}", exception);
         // Store PC in EPC register (unless currently in Branch Delay in which case store PC - 4)
         if in_delay_slot {
-            self.cop0.epc = self.registers.program_counter - 4;
-            self.cop0.cause.set_branch_delay(true);
+            self.bus.cop0.epc = self.registers.program_counter - 4;
+            self.bus.cop0.cause.set_branch_delay(true);
         } else {
-            self.cop0.epc = self.registers.program_counter;
-            self.cop0.cause.set_branch_delay(false);
+            self.bus.cop0.epc = self.registers.program_counter;
+            self.bus.cop0.cause.set_branch_delay(false);
         }
 
         // Store exception code in Cause register
-        self.cop0.cause.set_exception_code(exception);
+        self.bus.cop0.cause.set_exception_code(exception);
 
         // Push previous interrupt/kernel bits and turn off interrupts and enable kernel mode
-        self.cop0.sr.push_interrupt();
-        self.cop0.sr.set_interrupt(false);
-        self.cop0.sr.set_kernel_mode(true);
+        self.bus.cop0.sr.push_interrupt();
+        self.bus.cop0.sr.set_interrupt(false);
+        self.bus.cop0.sr.set_kernel_mode(true);
 
         // Set BadVaddr on Address Error Exception to the problematic address
         match exception {
             ExceptionType::AddressErrorLoad(addr) | ExceptionType::AddressErrorStore(addr) => {
-                self.cop0.badvaddr = addr;
+                self.bus.cop0.badvaddr = addr;
             }
             _ => {} // do nothing
         }
 
         // Jump to Exception Vector. If BEV is set then 0xBFC00180, otherwise 0x80000080
-        if self.cop0.sr.get_bev() {
+        if self.bus.cop0.sr.get_bev() {
             self.registers.program_counter = 0xBFC00180;
         } else {
             self.registers.program_counter = 0x80000080;
@@ -193,12 +189,12 @@ impl Cpu {
         );
         // Check for interrupts
         // Set cause bit (or clear it) if a hardware interrupt is ready
-        self.cop0
+        self.bus.cop0
             .cause
             .set_interrupt_pending(self.bus.interrupts.stat & self.bus.interrupts.mask > 0);
         // Execute interrupt if SR allows
-        if self.cop0.sr.interrupt_enabled()
-            && ((self.cop0.sr.interrupt_mask() & self.cop0.cause.interrupt_pending()) > 0)
+        if self.bus.cop0.sr.interrupt_enabled()
+            && ((self.bus.cop0.sr.interrupt_mask() & self.bus.cop0.cause.interrupt_pending()) > 0)
         {
             self.handle_exception(
                 ExceptionType::Interrupt,
@@ -239,21 +235,22 @@ impl Cpu {
     }
 
     fn execute_opcode(&mut self, opcode: u32) -> Result<(), ExceptionType> {
+        event!(Level::TRACE, "Got opcode: {:08X}", opcode);
         match opcode {
             // ADDI
-            0x20000000..=0x20FFFFFF => {
+            0x20000000..=0x23FFFFFF => {
                 let rs = (opcode & 0x03E00000) >> 21;
                 let imm = (opcode & 0x0000FFFF) as i16;
                 let rt = (opcode & 0x001F0000) >> 16;
 
                 let (sum, err) = Cpu::add(self.registers.read(rs), (imm as i32) as u32);
-                self.registers.write(rt, sum);
 
                 event!(Level::DEBUG, "ADDI ${rt}, ${rs}, {:04X}", imm);
 
                 if err {
                     Err(ExceptionType::ArithmeticOverflow)
                 } else {
+                    self.registers.write(rt, sum);
                     Ok(())
                 }
             }
@@ -284,15 +281,16 @@ impl Cpu {
                 Ok(())
             }
             // BEQ - Branch on equal
-            0x10000000..=0x13000000 => {
+            0x10000000..=0x13FFFFFF => {
                 let rs = (opcode & 0x03E00000) >> 21;
                 let imm = (opcode & 0x0000FFFF) as i16;
                 let rt = (opcode & 0x001F0000) >> 16;
 
-                event!(Level::DEBUG, "BEQ ${rt}, ${rs}, {:04X}", imm);
+                event!(Level::DEBUG, "BEQ ${rs}, ${rt}, {:04X}", imm);
 
                 if self.registers.read(rs) == self.registers.read(rt) {
                     let offset = (imm as i32) << 2;
+                    let offset = offset.wrapping_add(4);
                     self.registers.delayed_branch =
                         Some(self.registers.program_counter.wrapping_add(offset as u32));
                 }
@@ -316,6 +314,7 @@ impl Cpu {
                 // Both conditions true then BGEZ/BGEZAL, if both false then BLTZ/BLTZAL
                 if (name & 0x1 > 0) == (self.registers.read(rs) & 0x80000000 == 0) {
                     let offset = (imm as i32) << 2;
+                    let offset = offset.wrapping_add(4);
                     self.registers.delayed_branch =
                         Some(self.registers.program_counter.wrapping_add(offset as u32));
                 }
@@ -337,8 +336,25 @@ impl Cpu {
 
                 event!(Level::DEBUG, "BGEZ ${rs}, {:04X}", imm);
 
-                if self.registers.read(rs) & 0x80000000 == 0 && self.registers.read(rs) > 0 {
+                if (self.registers.read(rs) as i32) >= 0 {
                     let offset = (imm as i32) << 2;
+                    let offset = offset.wrapping_add(4);
+                    self.registers.delayed_branch =
+                        Some(self.registers.program_counter.wrapping_add(offset as u32));
+                }
+
+                Ok(())
+            }
+            // BLEZ - Branch on Less than or equal to zero
+            0x18000000..=0x1BFFFFFF => {
+                let rs = (opcode & 0x03E00000) >> 21;
+                let imm = (opcode & 0x0000FFFF) as i16;
+
+                event!(Level::DEBUG, "BGEZ ${rs}, {:04X}", imm);
+
+                if (self.registers.read(rs) as i32) < 0 {
+                    let offset = (imm as i32) << 2;
+                    let offset = offset.wrapping_add(4);
                     self.registers.delayed_branch =
                         Some(self.registers.program_counter.wrapping_add(offset as u32));
                 }
@@ -351,10 +367,11 @@ impl Cpu {
                 let imm = (opcode & 0x0000FFFF) as i16;
                 let rt = (opcode & 0x001F0000) >> 16;
 
-                event!(Level::DEBUG, "BNE ${rs}, ${rt}, {:X}", imm);
+                event!(Level::DEBUG, "BNE ${rs}, ${rt}, {:04X}", imm);
 
                 if self.registers.read(rs) != self.registers.read(rt) {
                     let offset = (imm as i32) << 2;
+                    let offset = offset.wrapping_add(4);
                     self.registers.delayed_branch =
                         Some(self.registers.program_counter.wrapping_add(offset as u32));
                 }
@@ -365,22 +382,26 @@ impl Cpu {
             0x08000000..=0x0BFFFFFF => {
                 let target = opcode & 0x03FFFFFF;
 
-                event!(Level::DEBUG, "J {:X}", target);
+                let calc_target = (self.registers.program_counter & 0xF0000000) | (target << 2);
+                
+                event!(Level::DEBUG, "JUMP {:08X}", calc_target);
 
                 self.registers.delayed_branch =
-                    Some((self.registers.program_counter & 0xF0000000) | (target << 2));
+                    Some(calc_target);
 
                 Ok(())
             }
             // JAL - Jump and Link
             0x0C000000..=0x0FFFFFFF => {
-                let target = (opcode & 0x03FFFFFF) << 2;
+                let target = opcode & 0x03FFFFFF;
 
-                event!(Level::DEBUG, "JAL {:X}", target);
+                let calc_target = (self.registers.program_counter & 0xF0000000) | (target << 2);
+
+                event!(Level::DEBUG, "JAL {:X}", calc_target);
 
                 self.registers.registers[31] = self.registers.program_counter + 8;
                 self.registers.delayed_branch =
-                    Some((self.registers.program_counter & 0x0FFFFFFF) | target);
+                    Some(calc_target);
 
                 Ok(())
             }
@@ -390,7 +411,7 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
-                event!(Level::DEBUG, "LB ${rt}, {:04X}({:02X})", offset, base);
+                event!(Level::DEBUG, "LB ${rt}, {:04X}(${:02})", offset, base);
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 let data = self.bus.mem_read_byte(addr)? as i8;
@@ -457,7 +478,7 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
-                event!(Level::DEBUG, "LW ${rt}, {:04X}({:02X})", offset, base);
+                event!(Level::DEBUG, "LW ${rt}, {:04X}(${base})", offset);
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 self.registers.write(rt, self.bus.mem_read_word(addr)?);
@@ -502,7 +523,7 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
-                event!(Level::DEBUG, "LWR ${rt}, {:04X}({:02X})", offset, base);
+                event!(Level::DEBUG, "LWR ${rt}, {:04X}(${base})", offset);
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32) as usize;
                 let [b0, b1, b2, b3] = self
@@ -546,7 +567,7 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
-                event!(Level::DEBUG, "LWR ${rt}, {:04X}({:02X})", offset, base);
+                event!(Level::DEBUG, "SB ${rt}, {:04X}(${base})", offset);
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 let byte = (self.registers.read(rt) & 0x000000FF) as u8;
@@ -560,7 +581,7 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
-                event!(Level::DEBUG, "SH ${rt}, {:04X}({:02X})", offset, base);
+                event!(Level::DEBUG, "SH ${rt}, {:04X}(${base})", offset);
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 if addr.is_multiple_of(2) {
@@ -719,11 +740,15 @@ impl Cpu {
             // COP0 - Coprocessor Operation 0
             // RFE - Return from Exception
             0x42000010 => {
-                self.cop0.sr.pop_interrupt();
+                event!(Level::DEBUG, "COP0 RFE");
+                self.bus.cop0.sr.pop_interrupt();
                 Ok(())
             }
             // TLBP, TLBR, TLBWI, TLBWR - Returns Reserved Instruction Exception
-            0x42000008 | 0x42000001 | 0x42000002 | 0x42000006 => Err(ExceptionType::Reserved),
+            0x42000008 | 0x42000001 | 0x42000002 | 0x42000006 => {
+                event!(Level::DEBUG, "COP0 TLBP/TLBR/TLBWI/TLBWR");
+                Err(ExceptionType::Reserved)
+            }
             // COP1 - Coprocessor Operation 1
             0x46000000..=0x47FFFFFF => {
                 panic!("No Coprocessor 1")
@@ -773,7 +798,9 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let rd = (opcode & 0x0000F800) >> 11;
 
-                if let Ok(val) = self.cop0.register_read(rd) {
+                event!(Level::DEBUG, "MFC0 ${rt}, ${rd}");
+
+                if let Ok(val) = self.bus.cop0.register_read(rd) {
                     self.registers.write(rt, val);
                     Ok(())
                 } else {
@@ -797,7 +824,9 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let rd = (opcode & 0x0000F800) >> 11;
 
-                self.cop0.register_write(rd, self.registers.read(rt))?;
+                event!(Level::DEBUG, "MTC0 ${rt}, ${rd}");
+
+                self.bus.cop0.register_write(rd, self.registers.read(rt))?;
 
                 Ok(())
             }
@@ -1067,7 +1096,7 @@ impl Cpu {
                 Ok(())
             }
             // SLTU - Set on Less Than Unsigned
-            op if op & 0xFC0007FF == 0x0000004B => {
+            op if op & 0xFC0007FF == 0x0000002B => {
                 let rs = (opcode & 0x03E00000) >> 21;
                 let rt = (opcode & 0x001F0000) >> 16;
                 let rd = (opcode & 0x0000F800) >> 11;
@@ -1196,7 +1225,8 @@ impl Cpu {
 
     // Casues an exception on overflow, indicated by true in bool
     fn add(arg1: u32, arg2: u32) -> (u32, bool) {
-        arg1.overflowing_add(arg2)
+        arg1.overflowing_add_signed(arg2 as i32)
+        //arg1.overflowing_add(arg2)
     }
 
     // Does not cause an exception on overflow

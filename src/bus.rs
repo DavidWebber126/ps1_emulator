@@ -2,6 +2,7 @@ use crate::cpu::ExceptionType;
 use crate::gpu::Gpu;
 use crate::interrupts::Interrupt;
 use crate::timer::Timer;
+use crate::cop0::Cop0;
 
 use tracing::{Level, event};
 
@@ -11,6 +12,7 @@ pub struct Bus {
     pub expansion1: [u8; 65536],        // 64 KB
     pub scratchpad: [u8; 1024],         // 1 KB
     pub kernel_rom: Box<[u8; 4194304]>, // 4 MB - Box needed due to large array size
+    pub cop0: Cop0,
     pub interrupts: Interrupt,
     pub timer0: Timer,
     pub timer1: Timer,
@@ -26,6 +28,7 @@ impl Bus {
             expansion1: [0; 65536],
             scratchpad: [0; 1024],
             kernel_rom: Box::new([0; 4194304]),
+            cop0: Cop0::new(),
             interrupts: Interrupt::new(),
             timer0: Timer::new(),
             timer1: Timer::new(),
@@ -51,7 +54,7 @@ impl Bus {
     }
 
     pub fn mem_read_byte(&mut self, addr: u32) -> Result<u8, ExceptionType> {
-        event!(Level::TRACE, "Attempt to read at address: {:08X}", addr);
+        event!(Level::TRACE, "Attempt to read at address: {:08X} (actual address used {:08X})", addr & 0x1FFFFFFF, addr);
 
         match addr {
             // KUSEG Kernel
@@ -72,12 +75,12 @@ impl Bus {
                 let addr = addr - 0x00010000;
                 Ok(self.ram[addr as usize])
             }
-            // KSEG0 - Cache enabled
+            // KSEG0 Main RAM - Cache enabled
             0x80010000..=0x801FFFFF => {
                 let addr = addr - 0x80010000;
                 Ok(self.ram[addr as usize])
             }
-            // KSEG1 - No Cache
+            // KSEG1 Main RAM - No Cache
             0xA0010000..=0xA01FFFFF => {
                 let addr = addr - 0xA0010000;
                 Ok(self.ram[addr as usize])
@@ -229,9 +232,25 @@ impl Bus {
             0x1F801129 => Ok((self.timer2.target_value >> 8) as u8),
             0x1F80112A => Ok(0),
             0x1F80112B => Ok(0),
+            // SPU Control Registers
+            // Main Volume
+            0x1F801D80 => Ok(0),
+            0x1F801D81 => Ok(0),
+            0x1F801D82 => Ok(0),
+            0x1F801D83 => Ok(0),
+            // Reverb Output Volume
+            0x1F801D84 => Ok(0),
+            0x1F801D85 => Ok(0),
+            0x1F801D86 => Ok(0),
+            0x1F801D87 => Ok(0),
+            // Expansion Region 2 Int/Dip/Post
+            0x1F802041 => Ok(0),
             // CPU Control Register
-            0xFFFE0000..=0xFFFE01FF => {
-                todo!()
+            // 0xFFFE0000..=0xFFFE01FF => {
+            //     todo!()
+            // }
+            0xFFFE0130..=0xFFFE0133 => {
+                Ok(0)
             }
             _ => {
                 event!(Level::WARN, "Address {:08X} not implemented yet (read)", addr);
@@ -243,10 +262,17 @@ impl Bus {
     pub fn mem_write_byte(&mut self, addr: u32, val: u8) -> Result<(), ExceptionType> {
         event!(
             Level::TRACE,
-            "Attempt to write at address: {:08X} with {:02X}",
-            addr,
-            val
+            "Attempt to write at address: {:08X} with {:02X}, (actual address used: {:08X})",
+            addr & 0x1FFFFFFF,
+            val,
+            addr
         );
+
+        // If IsC is set, loads and stores go to data cache and not main memory
+        if self.cop0.sr.get_isc() {
+            return Ok(())
+        }
+
         match addr {
             // KUSEG Kernel
             0x00000000..=0x0000FFFF => {
@@ -272,15 +298,15 @@ impl Bus {
                 self.ram[addr as usize] = val;
                 Ok(())
             }
-            // KSEG0 - Cache enabled
-            0x80100000..=0x801FFFFF => {
-                let addr = addr - 0x80100000;
+            // KSEG0 Main RAM - Cache enabled
+            0x80010000..=0x801FFFFF => {
+                let addr = addr - 0x80010000;
                 self.ram[addr as usize] = val;
                 Ok(())
             }
-            // KSEG1 - No Cache
-            0xA0100000..=0xA01FFFFF => {
-                let addr = addr - 0xA0100000;
+            // KSEG1 Main RAM - No Cache
+            0xA0010000..=0xA01FFFFF => {
+                let addr = addr - 0xA0010000;
                 self.ram[addr as usize] = val;
                 Ok(())
             }
@@ -526,9 +552,26 @@ impl Bus {
             }
             0x1F80112A => Ok(()),
             0x1F80112B => Ok(()),
+            // SPU Control Registers
+            // Main Volume
+            0x1F801D80 => Ok(()),
+            0x1F801D81 => Ok(()),
+            0x1F801D82 => Ok(()),
+            0x1F801D83 => Ok(()),
+            // Reverb Output Volume
+            0x1F801D84 => Ok(()),
+            0x1F801D85 => Ok(()),
+            0x1F801D86 => Ok(()),
+            0x1F801D87 => Ok(()),
+            // Expansion Region 2 Int/Dip/Post
+            0x1F802041 => Ok(()),
             // CPU Control Register
-            0xFFFE0000..=0xFFFE01FF => {
-                todo!()
+            // 0xFFFE0000..=0xFFFE01FF => {
+            //     println!("Write to {:08X} with {:02X}", addr, val);
+            //     todo!()
+            // }
+            0xFFFE0130..=0xFFFE0133 => {
+                Ok(())
             }
             _ => {
                 event!(Level::WARN, "Address {:08X} not implemented yet (write with {:02X})", addr, val);
@@ -552,12 +595,19 @@ impl Bus {
     }
 
     pub fn mem_write_word(&mut self, addr: u32, val: u32) -> Result<(), ExceptionType> {
+        // If isc is set, loads and stores go to data cache and not main memory
+        if self.cop0.sr.get_isc() {
+            return Ok(())
+        }
+
         match addr {
             0x1F801810 => {
+                event!(Level::TRACE, "Write to GP0 with {:08X}", val);
                 self.gpu.gp0_write(val);
                 Ok(())
             }
             0x1F801814 => {
+                event!(Level::TRACE, "Write to GP1 with {:08X}", val);
                 self.gpu.gp1_write(val);
                 Ok(())
             }
@@ -580,9 +630,14 @@ impl Bus {
     }
 
     pub fn mem_write_halfword(&mut self, addr: u32, val: u16) -> Result<(), ExceptionType> {
+        // If isc is set, loads and stores go to data cache and not main memory
+        if self.cop0.sr.get_isc() {
+            return Ok(())
+        }
+
         let [lo, hi] = val.to_le_bytes();
         self.mem_write_byte(addr, lo)?;
-        self.mem_write_byte(addr, hi)?;
+        self.mem_write_byte(addr + 1, hi)?;
         Ok(())
     }
 }

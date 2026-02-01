@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
 use eframe::egui::Color32;
+use tracing::{Level, event};
 
 const GPUPARAMLIMITS: [u8; 8] = [0, 0, 0, 1, 2, 1, 1, 0];
 
@@ -55,14 +56,34 @@ impl Gpu {
                     3 => {
                         // rectangle primitive
                         // Store command in params as it will be needed later
+                        event!(Level::DEBUG, "GP0 Rectangle Primitive command received");
+
                         self.params[0] = val;
                         Gp0State::ReceivingParams { command: 3, idx: 1 }
                     }
-                    4 => Gp0State::ReceivingParams { command: 4, idx: 0 }, // VRAM to VRAM blit
-                    5 => Gp0State::ReceivingParams { command: 5, idx: 0 }, // CPU to VRAM blit
-                    6 => Gp0State::ReceivingParams { command: 6, idx: 0 }, // VRAM to CPU blit
+                    4 => {
+                        // VRAM to VRAM blit
+                        event!(Level::DEBUG, "GP0 VRAM to VRAM BLIT received");
+
+                        Gp0State::ReceivingParams { command: 4, idx: 0 }
+                     }
+                    5 => {
+                        // CPU to VRAM blit
+                        event!(Level::DEBUG, "GP0 CPU to VRAM BLIT received");
+
+                        Gp0State::ReceivingParams { command: 5, idx: 0 }
+                     }
+                    6 => {
+                        // VRAM to CPU blit
+                        event!(Level::DEBUG, "GP0 VRAM to CPU BLIT received");
+
+                        Gp0State::ReceivingParams { command: 6, idx: 0 }
+                    } 
                     7 => todo!(),                                          // Environment commands
-                    _ => panic!("Impossible GPU command {}", val),
+                    _ => {
+                        event!(Level::ERROR, "Impossible GP0 command {:08X}", val);
+                        panic!("Impossible GPU command {}", val)
+                    }
                 }
             }
             Gp0State::ReceivingParams { command, idx } => {
@@ -88,6 +109,8 @@ impl Gpu {
                     };
                     self.cpu_to_vram_init()
                 } else {
+                    event!(Level::DEBUG, "Parameter {:08X} received", val);
+
                     Gp0State::ReceivingParams {
                         command,
                         idx: idx + 1,

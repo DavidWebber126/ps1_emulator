@@ -172,4 +172,8 @@ impl StatusRegister {
     pub fn get_bev(&self) -> bool {
         self.0 & 0x00400000 > 0
     }
+
+    pub fn get_isc(&self) -> bool {
+        self.0 & 0x10000 > 0
+    }
 }

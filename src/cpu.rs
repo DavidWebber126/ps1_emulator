@@ -115,9 +115,6 @@ impl Cpu {
             exe_size
         );
 
-        //let exe_size = exe_size_2kb * 2048;
-        //println!("Initial PC: {:X}. Initial R28: {:X}", initial_pc, initial_r28);
-        //println!("EXE starting address: {:X}. EXE size {:X}", exe_ram_addr, exe_size);
         self.bus.ram[exe_ram_addr as usize..(exe_ram_addr + exe_size) as usize]
             .copy_from_slice(&exe[2048..2048 + exe_size as usize]);
 
@@ -136,7 +133,9 @@ impl Cpu {
             || (pc == 0xB0 && self.registers.registers[9] == 0x3D)
         {
             let ch = self.registers.registers[4] as u8 as char;
+            event!(Level::TRACE, "TTY Output: {ch}");
             print!("{ch}");
+            //std::io::stdout().flush().unwrap();
         }
     }
 
@@ -329,14 +328,14 @@ impl Cpu {
 
                 Ok(())
             }
-            // BGTZ - Branch on greater than or equal to zero
+            // BGTZ - Branch on greater than zero
             0x1C000000..=0x1FFFFFFF => {
                 let rs = (opcode & 0x03E00000) >> 21;
                 let imm = (opcode & 0x0000FFFF) as i16;
 
-                event!(Level::DEBUG, "BGEZ ${rs}, {:04X}", imm);
+                event!(Level::DEBUG, "BGTZ ${rs}, {:04X}", imm);
 
-                if (self.registers.read(rs) as i32) >= 0 {
+                if (self.registers.read(rs) as i32) > 0 {
                     let offset = (imm as i32) << 2;
                     let offset = offset.wrapping_add(4);
                     self.registers.delayed_branch =
@@ -350,9 +349,9 @@ impl Cpu {
                 let rs = (opcode & 0x03E00000) >> 21;
                 let imm = (opcode & 0x0000FFFF) as i16;
 
-                event!(Level::DEBUG, "BGEZ ${rs}, {:04X}", imm);
+                event!(Level::DEBUG, "BLEZ ${rs}, {:04X}", imm);
 
-                if (self.registers.read(rs) as i32) < 0 {
+                if (self.registers.read(rs) as i32) <= 0 {
                     let offset = (imm as i32) << 2;
                     let offset = offset.wrapping_add(4);
                     self.registers.delayed_branch =
@@ -425,7 +424,7 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
-                event!(Level::DEBUG, "LBU ${rt}, {:04X}({:02X})", offset, base);
+                event!(Level::DEBUG, "LBU ${rt}, {:04X}(${:02X})", offset, base);
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 let data = self.bus.mem_read_byte(addr)?;

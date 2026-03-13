@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use tracing_subscriber::fmt::layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, Layer, filter, reload};
+use tracing_subscriber::{EnvFilter, Layer, filter};
 
 //use cpu::Cpu;
 use frontend::MyApp;

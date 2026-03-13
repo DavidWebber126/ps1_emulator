@@ -124,7 +124,6 @@ impl eframe::App for MyApp {
 
                     // Load BIOS
                     event!(Level::INFO, "BIOS size is {:08X}", bios.len());
-                    println!("PC: BFC01960 is {:02X}{:02X}{:02X}{:02X}", bios[0x42F7], bios[0x42F6], bios[0x42F5], bios[0x42F4]);
                     cpu.load_bios(&bios);
 
                     // Load exe

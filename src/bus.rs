@@ -1,8 +1,8 @@
+use crate::cop0::Cop0;
 use crate::cpu::ExceptionType;
 use crate::gpu::Gpu;
 use crate::interrupts::Interrupt;
 use crate::timer::Timer;
-use crate::cop0::Cop0;
 
 use tracing::{Level, event};
 
@@ -54,7 +54,12 @@ impl Bus {
     }
 
     pub fn mem_read_byte(&mut self, addr: u32) -> Result<u8, ExceptionType> {
-        event!(Level::TRACE, "Attempt to read at address: {:08X} (actual address used {:08X})", addr & 0x1FFFFFFF, addr);
+        event!(
+            Level::TRACE,
+            "Attempt to read at address: {:08X} (actual address used {:08X})",
+            addr & 0x1FFFFFFF,
+            addr
+        );
 
         match addr {
             // KUSEG Kernel
@@ -249,11 +254,13 @@ impl Bus {
             // 0xFFFE0000..=0xFFFE01FF => {
             //     todo!()
             // }
-            0xFFFE0130..=0xFFFE0133 => {
-                Ok(0)
-            }
+            0xFFFE0130..=0xFFFE0133 => Ok(0),
             _ => {
-                event!(Level::WARN, "Address {:08X} not implemented yet (read)", addr);
+                event!(
+                    Level::WARN,
+                    "Address {:08X} not implemented yet (read)",
+                    addr
+                );
                 Err(ExceptionType::BusErrorLoad(addr))
             }
         }
@@ -270,7 +277,7 @@ impl Bus {
 
         // If IsC is set, loads and stores go to data cache and not main memory
         if self.cop0.sr.get_isc() {
-            return Ok(())
+            return Ok(());
         }
 
         match addr {
@@ -570,11 +577,14 @@ impl Bus {
             //     println!("Write to {:08X} with {:02X}", addr, val);
             //     todo!()
             // }
-            0xFFFE0130..=0xFFFE0133 => {
-                Ok(())
-            }
+            0xFFFE0130..=0xFFFE0133 => Ok(()),
             _ => {
-                event!(Level::WARN, "Address {:08X} not implemented yet (write with {:02X})", addr, val);
+                event!(
+                    Level::WARN,
+                    "Address {:08X} not implemented yet (write with {:02X})",
+                    addr,
+                    val
+                );
                 Err(ExceptionType::BusErrorLoad(addr))
             }
         }
@@ -597,7 +607,7 @@ impl Bus {
     pub fn mem_write_word(&mut self, addr: u32, val: u32) -> Result<(), ExceptionType> {
         // If isc is set, loads and stores go to data cache and not main memory
         if self.cop0.sr.get_isc() {
-            return Ok(())
+            return Ok(());
         }
 
         match addr {
@@ -632,7 +642,7 @@ impl Bus {
     pub fn mem_write_halfword(&mut self, addr: u32, val: u16) -> Result<(), ExceptionType> {
         // If isc is set, loads and stores go to data cache and not main memory
         if self.cop0.sr.get_isc() {
-            return Ok(())
+            return Ok(());
         }
 
         let [lo, hi] = val.to_le_bytes();

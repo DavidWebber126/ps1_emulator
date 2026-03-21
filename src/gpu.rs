@@ -66,20 +66,20 @@ impl Gpu {
                         event!(Level::DEBUG, "GP0 VRAM to VRAM BLIT received");
 
                         Gp0State::ReceivingParams { command: 4, idx: 0 }
-                     }
+                    }
                     5 => {
                         // CPU to VRAM blit
                         event!(Level::DEBUG, "GP0 CPU to VRAM BLIT received");
 
                         Gp0State::ReceivingParams { command: 5, idx: 0 }
-                     }
+                    }
                     6 => {
                         // VRAM to CPU blit
                         event!(Level::DEBUG, "GP0 VRAM to CPU BLIT received");
 
                         Gp0State::ReceivingParams { command: 6, idx: 0 }
-                    } 
-                    7 => todo!(),                                          // Environment commands
+                    }
+                    7 => todo!(), // Environment commands
                     _ => {
                         event!(Level::ERROR, "Impossible GP0 command {:08X}", val);
                         panic!("Impossible GPU command {}", val)

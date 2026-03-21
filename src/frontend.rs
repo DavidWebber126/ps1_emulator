@@ -1,9 +1,8 @@
 use std::{fs, path::PathBuf};
 
 use crate::cpu::Cpu;
+use crate::tracing_setup;
 use eframe::egui::{self, Color32, Event};
-use tracing::{Level, event};
-//use tracing_subscriber::{Layer, reload, filter::Filtered};
 
 pub struct GameSelect {
     pub filepaths: Vec<PathBuf>,
@@ -31,10 +30,11 @@ pub struct MyApp {
     game_select: GameSelect,
     screen_texture: egui::TextureHandle,
     frame_buffer: [Color32; 524288],
+    tracing_start_pc: u32,
 }
 
 impl MyApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, folder: PathBuf, /*reload_handle: reload::Handle<tracing::level_filters::LevelFilter, impl Subscriber>*/) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, folder: PathBuf, tracing_start_pc: u32) -> Self {
         Self {
             cpu: None,
             paused: false,
@@ -47,6 +47,7 @@ impl MyApp {
                 egui::TextureOptions::NEAREST,
             ),
             frame_buffer: [Color32::WHITE; 524288],
+            tracing_start_pc,
         }
     }
 }
@@ -55,6 +56,11 @@ impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if let Some(cpu) = &mut self.cpu {
             if !self.paused {
+                if cpu.registers.program_counter == self.tracing_start_pc {
+                    println!("Are we here?");
+                    tracing_setup::init_tracing();
+                }
+
                 cpu.step_instruction();
 
                 if self.tty_output {
@@ -123,12 +129,14 @@ impl eframe::App for MyApp {
                     let mut cpu = Cpu::new();
 
                     // Load BIOS
-                    event!(Level::INFO, "BIOS size is {:08X}", bios.len());
+                    println!("BIOS size is {:08X}", bios.len());
                     cpu.load_bios(&bios);
 
                     // Load exe
                     let exe = fs::read(game).unwrap();
-                    event!(Level::INFO, "Exe size (including header): {:08X}", exe.len());
+                    println!("Exe size (including header): {:08X}", exe.len());
+                    //println!("At 0x00040CE8 is 0x{:02X}{:02X}{:02X}{:02X}", exe[])
+                    // Runs CPU until exe can be loaded
                     cpu.sideload_exe(&exe, self.tty_output);
 
                     self.cpu = Some(cpu);

@@ -1,0 +1,75 @@
+mod gp0;
+mod gp1;
+
+use gp0::Gp0;
+use gp1::Gp1;
+
+use eframe::egui::Color32;
+use tracing::{Level, event};
+
+pub struct Gpu {
+    pub gp0: Gp0,
+    pub gp1: Gp1,
+    pub frame_is_ready: bool,
+    pub counter: u64,
+}
+
+impl Gpu {
+    pub fn new() -> Self {
+        Self {
+            gp0: Gp0::new(),
+            gp1: Gp1::new(),
+            frame_is_ready: false,
+            counter: 0,
+        }
+    }
+
+    pub fn gpuread(&mut self) -> u32 {
+        event!(target: "ps1_emulator::GPU", Level::TRACE, "Reading GPUREAD");
+        match self.gp1.gpu_read_register {
+            0x00 | 0x01 | 0x06 => 0,
+            0x07 => 0x2,
+            _ => panic!("Impossible state for GP1 Read Register"),
+        }
+    }
+
+    pub fn gpustat(&mut self) -> u32 {
+        event!(target: "ps1_emulator::GPU", Level::TRACE, "Reading GPUSTAT");
+        let command_ready = (self.gp0.ready_for_cmd() as u32) << 26;
+        let dma_ready = (self.gp0.dma_ready() as u32) << 28;
+
+        dma_ready + command_ready
+    }
+
+    pub fn tick(&mut self, cycles: u32) {
+        self.counter += cycles as u64;
+
+        if self.counter >= 564480 {
+            self.frame_is_ready = true;
+            self.counter -= 564480;
+        } else {
+            self.frame_is_ready = false;
+        }
+    }
+
+    pub fn render_vram(&mut self, output_buffer: &mut [Color32; 524288]) {
+        for y in 0..512 {
+            for x in 0..1024 {
+                let vram_addr = 2 * (1024 * y + x);
+                let pixel =
+                    u16::from_le_bytes([self.gp0.vram[vram_addr], self.gp0.vram[vram_addr + 1]]);
+
+                // RGB555
+                let r = convert_5bit_to_8bit(pixel & 0x1F);
+                let g = convert_5bit_to_8bit((pixel >> 5) & 0x1F);
+                let b = convert_5bit_to_8bit((pixel >> 10) & 0x1F);
+
+                output_buffer[1024 * y + x] = Color32::from_rgb(r, g, b);
+            }
+        }
+    }
+}
+
+fn convert_5bit_to_8bit(color: u16) -> u8 {
+    (f64::from(color) * 255.0 / 31.0).round() as u8
+}

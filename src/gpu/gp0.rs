@@ -1,12 +1,11 @@
 use std::collections::VecDeque;
 
-use eframe::egui::Color32;
 use tracing::{Level, event};
 
 const GPUPARAMLIMITS: [u8; 8] = [0, 0, 0, 1, 2, 1, 1, 0];
 
 #[derive(Clone, Copy)]
-pub struct VramCopyFields {
+struct VramCopyFields {
     vram_x: u16,
     vram_y: u16,
     width: u16,
@@ -15,7 +14,7 @@ pub struct VramCopyFields {
     current_col: u16,
 }
 
-pub enum Gp0State {
+enum Gp0State {
     WaitingForCommand,
     ReceivingParams { command: u8, idx: u8 },
     ReceivingData(VramCopyFields),
@@ -23,31 +22,25 @@ pub enum Gp0State {
     //ReceivingParams { command: 4, idx: u8 },
 }
 
-pub struct Gpu {
-    gp0_state: Gp0State,
-    pub params: [u32; 16],
+pub struct Gp0 {
+    state: Gp0State,
     pub vram: Box<[u8; 1048576]>, // 1024 x 512 grid of pixels. Each pixel is two bytes so total space is 2 * 1024 * 512
-    pub frame_is_ready: bool,
-    pub counter: u64,
-    pub status: u32,
+    pub params: [u32; 16],
     pub command_buffer: VecDeque<u32>, // Holds at most 16 words (i.e 16 u32s)
 }
 
-impl Gpu {
+impl Gp0 {
     pub fn new() -> Self {
         Self {
-            gp0_state: Gp0State::WaitingForCommand,
-            params: [0; 16],
+            state: Gp0State::WaitingForCommand,
             vram: Box::new([0; 1048576]),
-            frame_is_ready: false,
-            counter: 0,
-            status: 0,
+            params: [0; 16],
             command_buffer: VecDeque::with_capacity(16),
         }
     }
 
-    pub fn gp0_write(&mut self, val: u32) {
-        self.gp0_state = match self.gp0_state {
+    pub fn write(&mut self, val: u32) {
+        self.state = match self.state {
             Gp0State::WaitingForCommand => {
                 match val >> 29 {
                     0 => todo!(), // misc commands
@@ -56,32 +49,32 @@ impl Gpu {
                     3 => {
                         // rectangle primitive
                         // Store command in params as it will be needed later
-                        event!(Level::DEBUG, "GP0 Rectangle Primitive command received");
+                        event!(target: "ps1_emulator::GPU", Level::TRACE, "GP0 Rectangle Primitive command received");
 
                         self.params[0] = val;
                         Gp0State::ReceivingParams { command: 3, idx: 1 }
                     }
                     4 => {
                         // VRAM to VRAM blit
-                        event!(Level::DEBUG, "GP0 VRAM to VRAM BLIT received");
+                        event!(target: "ps1_emulator::GPU", Level::TRACE, "GP0 VRAM to VRAM BLIT received");
 
                         Gp0State::ReceivingParams { command: 4, idx: 0 }
                     }
                     5 => {
                         // CPU to VRAM blit
-                        event!(Level::DEBUG, "GP0 CPU to VRAM BLIT received");
+                        event!(target: "ps1_emulator::GPU", Level::TRACE, "GP0 CPU to VRAM BLIT received");
 
                         Gp0State::ReceivingParams { command: 5, idx: 0 }
                     }
                     6 => {
                         // VRAM to CPU blit
-                        event!(Level::DEBUG, "GP0 VRAM to CPU BLIT received");
+                        event!(target: "ps1_emulator::GPU", Level::TRACE, "GP0 VRAM to CPU BLIT received");
 
                         Gp0State::ReceivingParams { command: 6, idx: 0 }
                     }
                     7 => todo!(), // Environment commands
                     _ => {
-                        event!(Level::ERROR, "Impossible GP0 command {:08X}", val);
+                        event!(target: "ps1_emulator::GPU", Level::ERROR, "Impossible GP0 command {:08X}", val);
                         panic!("Impossible GPU command {}", val)
                     }
                 }
@@ -90,7 +83,7 @@ impl Gpu {
                 let limit = GPUPARAMLIMITS[command as usize];
 
                 if idx >= limit {
-                    // All parameters received
+                    // All parameters received. Diatch to execute the command now
                     match command {
                         0 => todo!(), // misc commands
                         1 => todo!(), // polygon primitive
@@ -98,18 +91,19 @@ impl Gpu {
                         3 => {
                             // rectangle primitive
                             self.draw_1x1_untextured_rectangle();
+                            Gp0State::WaitingForCommand
                         }
                         4 => todo!(), // VRAM to VRAM blit
                         5 => {
                             // CPU to VRAM blit
+                            self.cpu_to_vram_init()
                         }
                         6 => todo!(), // VRAM to CPU blit
                         7 => todo!(), // Environment commands
                         _ => panic!("Impossible GPU command {}", val),
-                    };
-                    self.cpu_to_vram_init()
+                    }
                 } else {
-                    event!(Level::DEBUG, "Parameter {:08X} received", val);
+                    event!(target: "ps1_emulator::GPU", Level::TRACE, "Parameter {:08X} received", val);
 
                     Gp0State::ReceivingParams {
                         command,
@@ -120,6 +114,14 @@ impl Gpu {
             Gp0State::ReceivingData(mut fields) => self.cpu_to_vram_process(val, &mut fields),
             //_ => todo!(),
         };
+    }
+
+    pub fn ready_for_cmd(&self) -> bool {
+        matches!(self.state, Gp0State::WaitingForCommand)
+    }
+
+    pub fn dma_ready(&self) -> bool {
+        true
     }
 
     fn cpu_to_vram_init(&mut self) -> Gp0State {
@@ -171,29 +173,6 @@ impl Gpu {
         todo!()
     }
 
-    pub fn gp1_write(&mut self, val: u32) {
-        todo!()
-    }
-
-    pub fn gpuread(&mut self) -> u32 {
-        0x14000000
-    }
-
-    pub fn gpustat(&mut self) -> u32 {
-        todo!()
-    }
-
-    pub fn tick(&mut self, cycles: u32) {
-        self.counter += cycles as u64;
-
-        if self.counter >= 564480 {
-            self.frame_is_ready = true;
-            self.counter -= 564480
-        } else {
-            self.frame_is_ready = false;
-        }
-    }
-
     fn draw_1x1_untextured_rectangle(&mut self) {
         let command = self.params[0];
         let parameter = self.params[1];
@@ -212,24 +191,4 @@ impl Gpu {
         self.vram[vram_addr] = pixel_lo;
         self.vram[vram_addr] = pixel_hi;
     }
-
-    pub fn render_vram(&mut self, output_buffer: &mut [Color32; 524288]) {
-        for y in 0..512 {
-            for x in 0..1024 {
-                let vram_addr = 2 * (1024 * y + x);
-                let pixel = u16::from_le_bytes([self.vram[vram_addr], self.vram[vram_addr + 1]]);
-
-                // RGB555
-                let r = convert_5bit_to_8bit(pixel & 0x1F);
-                let g = convert_5bit_to_8bit((pixel >> 5) & 0x1F);
-                let b = convert_5bit_to_8bit((pixel >> 10) & 0x1F);
-
-                output_buffer[1024 * y + x] = Color32::from_rgb(r, g, b);
-            }
-        }
-    }
-}
-
-fn convert_5bit_to_8bit(color: u16) -> u8 {
-    (f64::from(color) * 255.0 / 31.0).round() as u8
 }

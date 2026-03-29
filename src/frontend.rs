@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, time::Instant};
 
 use crate::cpu::Cpu;
 use crate::tracing_setup;
@@ -31,6 +31,9 @@ pub struct MyApp {
     screen_texture: egui::TextureHandle,
     frame_buffer: [Color32; 524288],
     tracing_start_pc: u32,
+    logging_enabled: bool,
+    timing_baseline: Instant,
+    frame_count: usize,
 }
 
 impl MyApp {
@@ -48,20 +51,42 @@ impl MyApp {
             ),
             frame_buffer: [Color32::WHITE; 524288],
             tracing_start_pc,
+            logging_enabled: false,
+            timing_baseline: Instant::now(),
+            frame_count: 0,
         }
     }
 }
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+
+        // Run CPU and assoicated steps
         if let Some(cpu) = &mut self.cpu {
             if !self.paused {
-                if cpu.registers.program_counter == self.tracing_start_pc {
-                    println!("Are we here?");
+                if !self.logging_enabled && cpu.registers.program_counter == self.tracing_start_pc {
+                    println!("Begin logging...");
+                    self.logging_enabled = true;
                     tracing_setup::init_tracing();
                 }
 
                 cpu.step_instruction();
+
+                if cpu.bus.gpu.frame_is_ready {
+                    println!("Are we here?");
+                    self.frame_count += 1
+                }
+
+                if self.frame_count == 0 {
+                    self.timing_baseline = Instant::now();
+                } else if self.frame_count == 30 {
+                    let time = self.timing_baseline.elapsed().as_secs_f32();
+                    self.frame_count = 1;
+                    self.timing_baseline = Instant::now();
+                    let fps = 30.0 / time;
+                    println!("FPS is {fps}");
+                }
+                
 
                 if self.tty_output {
                     cpu.check_for_tty_output();
@@ -84,25 +109,23 @@ impl eframe::App for MyApp {
                 }
             });
 
-            if cpu.bus.gpu.frame_is_ready {
-                // render frame to screen, get user input, etc
+            // if cpu.bus.gpu.frame_is_ready {
+            //     // render frame to screen, get user input, etc
 
-                cpu.bus.gpu.render_vram(&mut self.frame_buffer);
+            //     cpu.bus.gpu.render_vram(&mut self.frame_buffer);
 
-                self.screen_texture.set(
-                    egui::ColorImage {
-                        size: [1024, 512],
-                        source_size: egui::Vec2 {
-                            x: 1024.0,
-                            y: 512.0,
-                        },
-                        pixels: self.frame_buffer.to_vec(),
-                    },
-                    egui::TextureOptions::NEAREST,
-                );
-            }
-
-            ctx.request_repaint();
+            //     self.screen_texture.set(
+            //         egui::ColorImage {
+            //             size: [1024, 512],
+            //             source_size: egui::Vec2 {
+            //                 x: 1024.0,
+            //                 y: 512.0,
+            //             },
+            //             pixels: self.frame_buffer.to_vec(),
+            //         },
+            //         egui::TextureOptions::NEAREST,
+            //     );
+            // }
         } else {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ctx.input(|i| {
@@ -154,5 +177,7 @@ impl eframe::App for MyApp {
                 }
             });
         };
+
+        ctx.request_repaint();
     }
 }

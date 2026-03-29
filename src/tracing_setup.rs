@@ -22,9 +22,6 @@ pub fn init_tracing() {
             (*metadata).target().contains("ps1_emulator") && ((*metadata).name() != "BIOS")
         }));
 
-    //let (dbg_filter, reload_handle) = reload::Layer::new(dbg_layer);
-    //print_type_of(&reload_handle);
-
     // Layer to write to stdout
     let fmt_layer = layer()
         .with_filter(filter::LevelFilter::INFO)

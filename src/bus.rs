@@ -7,11 +7,11 @@ use crate::timer::Timer;
 use tracing::{Level, event};
 
 pub struct Bus {
-    pub kernel: [u8; 65536],            // 64 KB
-    pub ram: Box<[u8; 2097152]>,        // 2 MB - Box needed due to large array size
-    pub expansion1: [u8; 65536],        // 64 KB
-    pub scratchpad: [u8; 1024],         // 1 KB
-    pub kernel_rom: Box<[u8; 4194304]>, // 4 MB - Box needed due to large array size
+    pub kernel: Box<[u8; 65536]>,      // 64 KB
+    pub ram: Box<[u8; 2097152]>,       // 2 MB - Box needed due to large array size
+    pub expansion1: Box<[u8; 65536]>,  // 64 KB
+    pub scratchpad: [u8; 1024],        // 1 KB
+    pub kernel_rom: Box<[u8; 524288]>, // 512 KB - Box needed due to large array size
     pub cop0: Cop0,
     pub interrupts: Interrupt,
     pub timer0: Timer,
@@ -23,11 +23,11 @@ pub struct Bus {
 impl Bus {
     pub fn new() -> Self {
         Self {
-            kernel: [0; 65536],
+            kernel: Box::new([0; 65536]),
             ram: Box::new([0; 2097152]),
-            expansion1: [0; 65536],
+            expansion1: Box::new([0; 65536]),
             scratchpad: [0; 1024],
-            kernel_rom: Box::new([0; 4194304]),
+            kernel_rom: Box::new([0; 524288]),
             cop0: Cop0::new(),
             interrupts: Interrupt::new(),
             timer0: Timer::new(),
@@ -55,6 +55,7 @@ impl Bus {
 
     pub fn mem_read_byte(&mut self, addr: u32) -> Result<u8, ExceptionType> {
         event!(
+            target: "ps1_emulator::BUS",
             Level::TRACE,
             "Attempt to read at address: {:08X} (actual address used {:08X})",
             addr & 0x1FFFFFFF,
@@ -257,6 +258,7 @@ impl Bus {
             0xFFFE0130..=0xFFFE0133 => Ok(0),
             _ => {
                 event!(
+                    target: "ps1_emulator::BUS",
                     Level::WARN,
                     "Address {:08X} not implemented yet (read)",
                     addr
@@ -268,6 +270,7 @@ impl Bus {
 
     pub fn mem_write_byte(&mut self, addr: u32, val: u8) -> Result<(), ExceptionType> {
         event!(
+            target: "ps1_emulator::BUS",
             Level::TRACE,
             "Attempt to write at address: {:08X} with {:02X}, (actual address used: {:08X})",
             addr & 0x1FFFFFFF,
@@ -301,7 +304,7 @@ impl Bus {
             // KUSEG Main RAM - Cache enabled
             0x00100000..=0x001FFFFF => {
                 // mirror address to between 0x00100000 and 0x001FFFFF
-                let addr = addr - 0x1FFFFF;
+                let addr = addr - 0x100000;
                 self.ram[addr as usize] = val;
                 Ok(())
             }
@@ -580,6 +583,7 @@ impl Bus {
             0xFFFE0130..=0xFFFE0133 => Ok(()),
             _ => {
                 event!(
+                    target: "ps1_emulator::BUS",
                     Level::WARN,
                     "Address {:08X} not implemented yet (write with {:02X})",
                     addr,
@@ -612,12 +616,12 @@ impl Bus {
 
         match addr {
             0x1F801810 => {
-                event!(Level::TRACE, "Write to GP0 with {:08X}", val);
+                event!(target: "ps1_emulator::BUS", Level::TRACE, "Write to GP0 with {:08X}", val);
                 self.gpu.gp0.write(val);
                 Ok(())
             }
             0x1F801814 => {
-                event!(Level::TRACE, "Write to GP1 with {:08X}", val);
+                event!(target: "ps1_emulator::BUS", Level::TRACE, "Write to GP1 with {:08X}", val);
                 self.gpu.gp1.write(val);
                 Ok(())
             }

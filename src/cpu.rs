@@ -180,12 +180,14 @@ impl Cpu {
             pc = self.registers.program_counter
         );
         let _enter = span.enter();
+
         // Check for interrupts
         // Set cause bit (or clear it) if a hardware interrupt is ready
         self.bus
             .cop0
             .cause
             .set_interrupt_pending(self.bus.interrupts.stat & self.bus.interrupts.mask > 0);
+
         // Execute interrupt if SR allows
         if self.bus.cop0.sr.interrupt_enabled()
             && ((self.bus.cop0.sr.interrupt_mask() & self.bus.cop0.cause.interrupt_pending()) > 0)
@@ -239,8 +241,7 @@ impl Cpu {
 
                 let (sum, err) = Cpu::add(self.registers.read(rs), (imm as i32) as u32);
 
-                let asm = format!("ADDI ${rt}, ${rs}, {:04X}", imm);
-                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("ADDI ${rt}, ${rs}, {:04X}", imm), self.registers);
 
                 if err {
                     Err(ExceptionType::ArithmeticOverflow)
@@ -255,8 +256,7 @@ impl Cpu {
                 let imm = (opcode & 0x0000FFFF) as i16;
                 let rt = (opcode & 0x001F0000) >> 16;
 
-                let asm = format!("ADDIU ${rt}, ${rs}, {:04X}", imm);
-                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("ADDIU ${rt}, ${rs}, {:04X}", imm), self.registers);
 
                 self.registers
                     .write(rt, Cpu::addu(self.registers.read(rs), (imm as i32) as u32));
@@ -269,8 +269,7 @@ impl Cpu {
                 let imm = (opcode & 0x0000FFFF) as i16;
                 let rt = (opcode & 0x001F0000) >> 16;
 
-                let asm = format!("ANDI ${rt}, ${rs}, {:04X}", imm);
-                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("ANDI ${rt}, ${rs}, {:04X}", imm), self.registers);
 
                 self.registers
                     .write(rt, self.registers.read(rs) & ((imm as i32) as u32));
@@ -283,8 +282,7 @@ impl Cpu {
                 let imm = (opcode & 0x0000FFFF) as i16;
                 let rt = (opcode & 0x001F0000) >> 16;
 
-                let asm = format!("BEQ ${rs}, ${rt}, {:04X}", imm);
-                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("BEQ ${rs}, ${rt}, {:04X}", imm), self.registers);
 
                 if self.registers.read(rs) == self.registers.read(rt) {
                     let offset = (imm as i32) << 2;
@@ -319,20 +317,16 @@ impl Cpu {
 
                 match name {
                     0 => {
-                        let asm = format!("BLTZ ${rs}, {:04X}", imm);
-                        event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers)
+                        event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("BLTZ ${rs}, {:04X}", imm), self.registers)
                     }
                     1 => {
-                        let asm = format!("BGEZ ${rs}, {:04X}", imm);
-                        event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20} {}", asm, self.registers)
+                        event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20} {}", format!("BGEZ ${rs}, {:04X}", imm), self.registers)
                     }
                     16 => {
-                        let asm = format!("BLTZAL ${rs}, {:04X}", imm);
-                        event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers)
+                        event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("BLTZAL ${rs}, {:04X}", imm), self.registers)
                     }
                     17 => {
-                        let asm = format!("BGEZAL ${rs}, {:04X}", imm);
-                        event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers)
+                        event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("BGEZAL ${rs}, {:04X}", imm), self.registers)
                     }
                     _ => panic!("Impossible"),
                 }
@@ -344,8 +338,7 @@ impl Cpu {
                 let rs = (opcode & 0x03E00000) >> 21;
                 let imm = (opcode & 0x0000FFFF) as i16;
 
-                let asm = format!("BGTZ ${rs}, {:04X}", imm);
-                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("BGTZ ${rs}, {:04X}", imm), self.registers);
 
                 if (self.registers.read(rs) as i32) > 0 {
                     let offset = (imm as i32) << 2;
@@ -361,8 +354,7 @@ impl Cpu {
                 let rs = (opcode & 0x03E00000) >> 21;
                 let imm = (opcode & 0x0000FFFF) as i16;
 
-                let asm = format!("BLEZ ${rs}, {:04X}", imm);
-                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("BLEZ ${rs}, {:04X}", imm), self.registers);
 
                 if (self.registers.read(rs) as i32) <= 0 {
                     let offset = (imm as i32) << 2;
@@ -379,8 +371,7 @@ impl Cpu {
                 let imm = (opcode & 0x0000FFFF) as i16;
                 let rt = (opcode & 0x001F0000) >> 16;
 
-                let asm = format!("BNE ${rs}, ${rt}, {:04X}", imm);
-                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("BNE ${rs}, ${rt}, {:04X}", imm), self.registers);
 
                 if self.registers.read(rs) != self.registers.read(rt) {
                     let offset = (imm as i32) << 2;
@@ -397,8 +388,7 @@ impl Cpu {
 
                 let calc_target = (self.registers.program_counter & 0xF0000000) | (target << 2);
 
-                let asm = format!("JUMP {:08X}", calc_target);
-                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("JUMP {:08X}", calc_target), self.registers);
 
                 self.registers.delayed_branch = Some(calc_target);
 
@@ -410,8 +400,7 @@ impl Cpu {
 
                 let calc_target = (self.registers.program_counter & 0xF0000000) | (target << 2);
 
-                let asm = format!("JAL {:08X}", calc_target);
-                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("JAL {:08X}", calc_target), self.registers);
 
                 self.registers.registers[31] = self.registers.program_counter + 8;
                 self.registers.delayed_branch = Some(calc_target);
@@ -424,8 +413,7 @@ impl Cpu {
                 let rt = (opcode & 0x001F0000) >> 16;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
-                let asm = format!("LB ${rt}, {:04X}(${:02})", offset, base);
-                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("LB ${rt}, {:04X}(${:02})", offset, base), self.registers);
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 let data = self.bus.mem_read_byte(addr)? as i8;
@@ -901,11 +889,11 @@ impl Cpu {
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
 
                 let (sum, err) = Cpu::add(self.registers.read(rs), self.registers.read(rt));
-                self.registers.write(rd, sum);
 
                 if err {
                     Err(ExceptionType::ArithmeticOverflow)
                 } else {
+                    self.registers.write(rd, sum);
                     Ok(())
                 }
             }
@@ -945,8 +933,8 @@ impl Cpu {
             }
             // DIV
             op if op & 0xFC00003F == 0x0000001A => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
 
                 let asm = format!("DIV ${rs}, ${rt}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -955,25 +943,41 @@ impl Cpu {
                 let divisor = self.registers.read(rt) as i32;
                 if divisor == 0 {
                     self.registers.hi = dividend as u32;
+                    if dividend > 0 {
+                        self.registers.lo = 0xFFFFFFFF;
+                    } else {
+                        self.registers.lo = 1;
+                    }
+                } else if dividend == i32::MIN && divisor == -1 {
+                    self.registers.lo = 0x80000000;
+                    self.registers.hi = 0;
                 } else {
-                    self.registers.lo = (dividend / divisor) as u32;
-                    self.registers.hi = (dividend % divisor) as u32;
+                    self.registers.lo = dividend.div_euclid(divisor) as u32;
+                    self.registers.hi = dividend.rem_euclid(divisor) as u32;
                 }
+
+                //println!("Divide {:08X} by {:08X}. Got {:08X} with remainder of {:08X}", dividend, divisor, self.registers.lo, self.registers.hi);
 
                 Ok(())
             }
             // DIVU
             op if op & 0xFC00003F == 0x0000001B => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
 
                 let asm = format!("DIVU ${rs}, ${rt}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
 
                 let dividend = self.registers.read(rs);
                 let divisor = self.registers.read(rt);
-                self.registers.lo = dividend / divisor;
-                self.registers.hi = dividend % divisor;
+
+                if divisor == 0 {
+                    self.registers.hi = dividend;
+                    self.registers.lo = 1;
+                } else {
+                    self.registers.lo = dividend.div_euclid(divisor);
+                    self.registers.hi = dividend.rem_euclid(divisor);
+                }
 
                 Ok(())
             }
@@ -1129,7 +1133,7 @@ impl Cpu {
                 let asm = format!("SLLV ${rd}, ${rt}, ${rs}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
 
-                let shift = self.registers.read(rs) & 0x7;
+                let shift = self.registers.read(rs) & 0x1F;
                 self.registers.write(rd, self.registers.read(rt) << shift);
 
                 Ok(())
@@ -1227,15 +1231,14 @@ impl Cpu {
                 let asm = format!("SUB ${rd}, ${rs}, {rt}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
 
-                let (diff, err) = Cpu::add(
-                    self.registers.read(rs),
-                    (!self.registers.read(rt)).wrapping_add(1),
-                );
-                self.registers.write(rd, diff);
+                let lhs = self.registers.read(rs);
+                let rhs = self.registers.read(rt);
+                let (diff, err) = (lhs as i32).overflowing_sub(rhs as i32); //Cpu::add(lhs, (!rhs).wrapping_add(1));
 
-                if err {
+                if err  {
                     Err(ExceptionType::ArithmeticOverflow)
                 } else {
+                    self.registers.write(rd, diff as u32);
                     Ok(())
                 }
             }
@@ -1289,10 +1292,12 @@ impl Cpu {
         }
     }
 
-    // Casues an exception on overflow, indicated by true in bool
+    // Causes an exception on overflow, indicated by true in bool
     fn add(arg1: u32, arg2: u32) -> (u32, bool) {
-        arg1.overflowing_add_signed(arg2 as i32)
-        //arg1.overflowing_add(arg2)
+        let lhs = arg1 as i32;
+        let rhs = arg2 as i32;
+        let (result, err) = lhs.overflowing_add(rhs);
+        (result as u32, err)
     }
 
     // Does not cause an exception on overflow

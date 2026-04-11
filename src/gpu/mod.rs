@@ -25,7 +25,13 @@ impl Gpu {
     }
 
     pub fn gpuread(&mut self) -> u32 {
-        event!(target: "ps1_emulator::GPU", Level::TRACE, "Reading GPUREAD");
+        event!(target: "ps1_emulator::GPU", Level::DEBUG, "Reading GPUREAD");
+
+        // If GP0 is in VRAM to CPU Blit then return that value first
+        if self.gp0.is_sending_data() {
+            return self.gp0.vram_to_cpu_process();
+        }
+
         match self.gp1.gpu_read_register {
             0x00 | 0x01 | 0x06 => 0,
             0x07 => 0x2,
@@ -34,11 +40,13 @@ impl Gpu {
     }
 
     pub fn gpustat(&mut self) -> u32 {
-        event!(target: "ps1_emulator::GPU", Level::TRACE, "Reading GPUSTAT");
+        event!(target: "ps1_emulator::GPU", Level::DEBUG, "Reading GPUSTAT");
+
         let command_ready = (self.gp0.ready_for_cmd() as u32) << 26;
+        let vram_data_ready = (self.gp0.is_sending_data() as u32) << 27;
         let dma_ready = (self.gp0.dma_ready() as u32) << 28;
 
-        dma_ready + command_ready
+        dma_ready + vram_data_ready + command_ready
     }
 
     pub fn tick(&mut self, cycles: u32) {

@@ -16,7 +16,7 @@ pub fn init_tracing() {
     let dbg_layer = layer()
         .with_writer(log_file)
         .with_ansi(false)
-        .without_time()
+        //.without_time()
         .with_filter(EnvFilter::from_default_env())
         .with_filter(filter::filter_fn(|metadata| {
             (*metadata).target().contains("ps1_emulator") && ((*metadata).name() != "BIOS")

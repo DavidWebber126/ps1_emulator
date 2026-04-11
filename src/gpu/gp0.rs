@@ -18,6 +18,7 @@ enum Gp0State {
     WaitingForCommand,
     ReceivingParams { command: u8, idx: u8 },
     ReceivingData(VramCopyFields),
+    SendingData(VramCopyFields),
     //CpuBlitParams { idx: u8 },
     //ReceivingParams { command: 4, idx: u8 },
 }
@@ -40,6 +41,8 @@ impl Gp0 {
     }
 
     pub fn write(&mut self, val: u32) {
+        event!(target: "ps1_emulator::GPU", Level::DEBUG, "Write to GP0 with {:08X}", val);
+
         self.state = match self.state {
             Gp0State::WaitingForCommand => {
                 match val >> 29 {
@@ -82,7 +85,12 @@ impl Gp0 {
             Gp0State::ReceivingParams { command, idx } => {
                 let limit = GPUPARAMLIMITS[command as usize];
 
+                event!(target: "ps1_emulator::GPU", Level::TRACE, "Parameter {:08X} received", val);
+
+                self.params[idx as usize] = val;
+
                 if idx >= limit {
+                    event!(target: "ps1_emulator::GPU", Level::TRACE, "All Params received for command {command}");
                     // All parameters received. Diatch to execute the command now
                     match command {
                         0 => todo!(), // misc commands
@@ -98,21 +106,29 @@ impl Gp0 {
                             // CPU to VRAM blit
                             self.cpu_to_vram_init()
                         }
-                        6 => todo!(), // VRAM to CPU blit
+                        6 => {
+                            // VRAM to CPU blit
+                            self.vram_to_cpu_init()
+                        }
                         7 => todo!(), // Environment commands
                         _ => panic!("Impossible GPU command {}", val),
                     }
                 } else {
-                    event!(target: "ps1_emulator::GPU", Level::TRACE, "Parameter {:08X} received", val);
-
                     Gp0State::ReceivingParams {
                         command,
                         idx: idx + 1,
                     }
                 }
             }
-            Gp0State::ReceivingData(mut fields) => self.cpu_to_vram_process(val, &mut fields),
-            //_ => todo!(),
+            Gp0State::ReceivingData(mut fields) => {
+                event!(target: "ps1_emulator::GPU", Level::TRACE, "Received Data: {:08X}", val);
+
+                self.cpu_to_vram_process(val, &mut fields)
+            }
+            Gp0State::SendingData(fields) => {
+                // GPU is busy sending data. Do not change state until final data has been sent via GPUREAD
+                Gp0State::SendingData(fields)
+            }
         };
     }
 
@@ -138,6 +154,8 @@ impl Gp0 {
             height = 512;
         }
 
+        event!(target: "ps1_emulator::GPU", Level::TRACE, "CPU to VRAM init with vram_x: 0x{:08X}, vram_y: 0x{:08X}, width: {width}, height: {height}", vram_x, vram_y);
+
         Gp0State::ReceivingData(VramCopyFields {
             vram_x,
             vram_y,
@@ -149,6 +167,8 @@ impl Gp0 {
     }
 
     fn cpu_to_vram_process(&mut self, word: u32, fields: &mut VramCopyFields) -> Gp0State {
+        event!(target: "ps1_emulator::GPU", Level::TRACE, "CPU to VRAM Data: {:08X}, current_row: {}, current_col: {}", word, fields.current_row, fields.current_col);
+
         for i in 0..2 {
             let halfword = (word >> (16 * i)) as u16;
             let vram_row = ((fields.vram_x + fields.current_row) & 0x1FF) as usize;
@@ -170,7 +190,72 @@ impl Gp0 {
             }
         }
 
-        todo!()
+        Gp0State::ReceivingData(*fields)
+    }
+
+    fn vram_to_cpu_init(&mut self) -> Gp0State {
+        let vram_x = (self.params[0] & 0x3FF) as u16;
+        let vram_y = ((self.params[0] >> 16) & 0x1FF) as u16;
+
+        let mut width = (self.params[1] & 0x3FF) as u16;
+        if width == 0 {
+            width = 1024;
+        }
+
+        let mut height = ((self.params[1] >> 16) & 0x1FF) as u16;
+        if height == 0 {
+            height = 512;
+        }
+
+        event!(target: "ps1_emulator::GPU", Level::TRACE, "VRAM to CPU init with vram_x: 0x{:08X}, vram_y: 0x{:08X}, width: {width}, height: {height}", vram_x, vram_y);
+
+        Gp0State::SendingData(VramCopyFields {
+            vram_x,
+            vram_y,
+            width,
+            height,
+            current_row: 0,
+            current_col: 0,
+        })
+    }
+
+    pub fn vram_to_cpu_process(&mut self) -> u32 {
+        let mut fields = match self.state {
+            Gp0State::SendingData(fields) => fields,
+            _ => panic!("VRAM to CPU only when GP0 is in sending data state"),
+        };
+
+        event!(target: "ps1_emulator::GPU", Level::TRACE, "VRAM to CPU Data: current_row: {}, current_col: {}", fields.current_row, fields.current_col);
+
+        let mut out = [0u8; 4];
+        for i in 0..2 {
+            let vram_row = ((fields.vram_x + fields.current_row) & 0x1FF) as usize;
+            let vram_col = ((fields.vram_y + fields.current_col) & 0x3FF) as usize;
+            let vram_addr = 2 * (1024 * vram_row + vram_col);
+            let vram_lo = self.vram[vram_addr];
+            let vram_hi = self.vram[vram_addr + 1];
+
+            out[2 * i] = vram_lo;
+            out[2 * i + 1] = vram_hi;
+
+            fields.current_col += 1;
+            if fields.current_col == fields.width {
+                fields.current_col = 0;
+                fields.current_row += 1;
+
+                if fields.current_row == fields.height {
+                    self.state = Gp0State::WaitingForCommand;
+                }
+            }
+        }
+
+        // If we did not finish sending data then keep sending
+        // If we did finish, i.e Gp0State == WaitingForCommand, then don't set state to SendingData
+        if matches!(self.state, Gp0State::SendingData(_)) {
+            self.state = Gp0State::SendingData(fields);
+        }
+
+        u32::from_le_bytes(out)
     }
 
     fn draw_1x1_untextured_rectangle(&mut self) {
@@ -190,5 +275,9 @@ impl Gp0 {
         let vram_addr = 2 * (1024 * y + x) as usize;
         self.vram[vram_addr] = pixel_lo;
         self.vram[vram_addr] = pixel_hi;
+    }
+
+    pub fn is_sending_data(&self) -> bool {
+        matches!(self.state, Gp0State::SendingData(_))
     }
 }

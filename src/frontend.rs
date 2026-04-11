@@ -4,6 +4,8 @@ use crate::cpu::Cpu;
 use crate::tracing_setup;
 use eframe::egui::{self, Color32, Event};
 
+use tracing::{Level, event};
+
 pub struct GameSelect {
     pub filepaths: Vec<PathBuf>,
     pub selected_game: Option<PathBuf>,
@@ -23,7 +25,8 @@ impl GameSelect {
 }
 
 pub struct MyApp {
-    cpu: Option<Cpu>,
+    cpu: Cpu,
+    cpu_rom_loaded: bool,
     paused: bool,
     //reload_handle: Handle<Filtered<Filtered<Layer<..., ..., ..., ...>, ..., ...>, ..., ...>, ...>,
     tty_output: bool,
@@ -39,7 +42,8 @@ pub struct MyApp {
 impl MyApp {
     pub fn new(cc: &eframe::CreationContext<'_>, folder: PathBuf, tracing_start_pc: u32) -> Self {
         Self {
-            cpu: None,
+            cpu: Cpu::new(),
+            cpu_rom_loaded: false,
             paused: false,
             //reload_handle,
             tty_output: true,
@@ -60,40 +64,25 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-
-        // Run CPU and assoicated steps
-        if let Some(cpu) = &mut self.cpu {
-            if !self.paused {
-                if !self.logging_enabled && cpu.registers.program_counter == self.tracing_start_pc {
+        // Run CPU and associated steps
+        if self.cpu_rom_loaded {
+            while !self.paused && !self.cpu.bus.gpu.frame_is_ready {
+                if !self.logging_enabled
+                    && self.cpu.registers.program_counter == self.tracing_start_pc
+                {
                     println!("Begin logging...");
                     self.logging_enabled = true;
                     tracing_setup::init_tracing();
                 }
 
-                cpu.step_instruction();
-
-                if cpu.bus.gpu.frame_is_ready {
-                    println!("Are we here?");
-                    self.frame_count += 1
-                }
-
-                if self.frame_count == 0 {
-                    self.timing_baseline = Instant::now();
-                } else if self.frame_count == 30 {
-                    let time = self.timing_baseline.elapsed().as_secs_f32();
-                    self.frame_count = 1;
-                    self.timing_baseline = Instant::now();
-                    let fps = 30.0 / time;
-                    println!("FPS is {fps}");
-                }
-                
+                self.cpu.step_instruction();
 
                 if self.tty_output {
-                    cpu.check_for_tty_output();
+                    self.cpu.check_for_tty_output();
                 }
             }
 
-            // user input
+            //user input
             ctx.input(|i| {
                 for event in &i.events {
                     match event {
@@ -109,23 +98,28 @@ impl eframe::App for MyApp {
                 }
             });
 
-            // if cpu.bus.gpu.frame_is_ready {
-            //     // render frame to screen, get user input, etc
+            if self.cpu.bus.gpu.frame_is_ready {
+                event!(Level::TRACE, "Frame is ready");
+                // render frame to screen, get user input, etc
 
-            //     cpu.bus.gpu.render_vram(&mut self.frame_buffer);
+                self.cpu.bus.gpu.render_vram(&mut self.frame_buffer);
 
-            //     self.screen_texture.set(
-            //         egui::ColorImage {
-            //             size: [1024, 512],
-            //             source_size: egui::Vec2 {
-            //                 x: 1024.0,
-            //                 y: 512.0,
-            //             },
-            //             pixels: self.frame_buffer.to_vec(),
-            //         },
-            //         egui::TextureOptions::NEAREST,
-            //     );
-            // }
+                self.screen_texture.set(
+                    egui::ColorImage {
+                        size: [1024, 512],
+                        source_size: egui::Vec2 {
+                            x: 1024.0,
+                            y: 512.0,
+                        },
+                        pixels: self.frame_buffer.to_vec(),
+                    },
+                    egui::TextureOptions::NEAREST,
+                );
+
+                self.cpu.bus.gpu.frame_is_ready = false;
+            }
+
+            ctx.request_repaint();
         } else {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ctx.input(|i| {
@@ -148,21 +142,19 @@ impl eframe::App for MyApp {
                     };
 
                     let bios = fs::read(bios_path).unwrap();
-                    // Create CPU
-                    let mut cpu = Cpu::new();
 
                     // Load BIOS
                     println!("BIOS size is {:08X}", bios.len());
-                    cpu.load_bios(&bios);
+                    self.cpu.load_bios(&bios);
 
                     // Load exe
                     let exe = fs::read(game).unwrap();
                     println!("Exe size (including header): {:08X}", exe.len());
                     //println!("At 0x00040CE8 is 0x{:02X}{:02X}{:02X}{:02X}", exe[])
                     // Runs CPU until exe can be loaded
-                    cpu.sideload_exe(&exe, self.tty_output);
+                    self.cpu.sideload_exe(&exe, self.tty_output);
 
-                    self.cpu = Some(cpu);
+                    self.cpu_rom_loaded = true;
                 } else {
                     // Offer game selection option
                     egui::ComboBox::from_label("Select a Game: ").show_ui(ui, |ui| {
@@ -177,7 +169,5 @@ impl eframe::App for MyApp {
                 }
             });
         };
-
-        ctx.request_repaint();
     }
 }

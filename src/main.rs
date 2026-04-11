@@ -22,6 +22,10 @@ fn main() {
     let _ = eframe::run_native(
         "PS1 Emulator",
         options,
-        Box::new(|cc| Ok(Box::<MyApp>::new(MyApp::new(cc, folder, 0x80010000 /*0x8001CC70*/)))),
+        Box::new(|cc| {
+            Ok(Box::<MyApp>::new(MyApp::new(
+                cc, folder, /*0x80010000*/ 0x80014F64,
+            )))
+        }),
     );
 }

@@ -1,5 +1,4 @@
 use tracing::{Level, event};
-use tracing_subscriber::filter::targets;
 
 pub struct Gp1 {
     pub display_enable: bool,
@@ -31,7 +30,8 @@ impl Gp1 {
     }
 
     pub fn write(&mut self, val: u32) {
-        event!(target: "ps1_emulator::GPU", Level::TRACE, "Write to GP1 with {val}");
+        event!(target: "ps1_emulator::GPU", Level::TRACE, "Write to GP1 with {:08X}", val);
+
         match val >> 24 {
             0x00 => {
                 // Reset GPU

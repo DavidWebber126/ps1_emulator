@@ -18,11 +18,11 @@ impl Timer {
     // Tick timer once. Returns true if IRQ
     pub fn tick(&mut self) -> bool {
         self.counter = self.counter.wrapping_add(1);
-        if self.reset_after_target() && self.counter == self.target_value.wrapping_add(1) {
+        if self.reset_after_target() && (self.counter == self.target_value.wrapping_add(1)) {
             self.counter = 0;
         }
 
-        if self.irq_at_max() && self.counter == 0xFFFF && self.allow_irq {
+        if self.irq_at_max() && (self.counter == 0xFFFF) && self.allow_irq {
             if self.irq_repeat() {
                 self.allow_irq = false;
             }
@@ -34,7 +34,7 @@ impl Timer {
             return true;
         }
 
-        if self.irq_when_at_target() && self.counter == self.target_value && self.allow_irq {
+        if self.irq_when_at_target() && (self.counter == self.target_value) && self.allow_irq {
             if self.irq_repeat() {
                 self.allow_irq = false;
             }

@@ -235,9 +235,9 @@ impl Cpu {
         match opcode {
             // ADDI
             0x20000000..=0x23FFFFFF => {
-                let rs = (opcode & 0x03E00000) >> 21;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
                 let imm = (opcode & 0x0000FFFF) as i16;
-                let rt = (opcode & 0x001F0000) >> 16;
 
                 let (sum, err) = Cpu::add(self.registers.read(rs), (imm as i32) as u32);
 
@@ -252,9 +252,9 @@ impl Cpu {
             }
             // ADDIU
             0x24000000..=0x27FFFFFF => {
-                let rs = (opcode & 0x03E00000) >> 21;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
                 let imm = (opcode & 0x0000FFFF) as i16;
-                let rt = (opcode & 0x001F0000) >> 16;
 
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("ADDIU ${rt}, ${rs}, {:04X}", imm), self.registers);
 
@@ -265,22 +265,21 @@ impl Cpu {
             }
             // ANDI
             0x30000000..=0x33FFFFFF => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let imm = (opcode & 0x0000FFFF) as i16;
-                let rt = (opcode & 0x001F0000) >> 16;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
+                let imm = opcode & 0x0000FFFF;
 
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("ANDI ${rt}, ${rs}, {:04X}", imm), self.registers);
 
-                self.registers
-                    .write(rt, self.registers.read(rs) & ((imm as i32) as u32));
+                self.registers.write(rt, self.registers.read(rs) & imm);
 
                 Ok(())
             }
             // BEQ - Branch on equal
             0x10000000..=0x13FFFFFF => {
-                let rs = (opcode & 0x03E00000) >> 21;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
                 let imm = (opcode & 0x0000FFFF) as i16;
-                let rt = (opcode & 0x001F0000) >> 16;
 
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("BEQ ${rs}, ${rt}, {:04X}", imm), self.registers);
 
@@ -298,9 +297,11 @@ impl Cpu {
             // BLTZ - Branch on less than zero. Name = 0b00000
             // BLTZAL - Branch on less than zero and link. Name = 0b10000
             0x04000000..=0x07FFFFFF => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let name = (opcode & 0x001F0000) >> 16;
+                let rs = (opcode >> 21) & 0x1F;
+                let name = (opcode >> 16) & 0x1F;
                 let imm = (opcode & 0x0000FFFF) as i16;
+
+                let rs_val = self.registers.read(rs);
 
                 // BGEZAL and BLTZAL unconditionally set register 31
                 if name & 0b10000 > 0 {
@@ -308,7 +309,7 @@ impl Cpu {
                 }
 
                 // Both conditions true then BGEZ/BGEZAL, if both false then BLTZ/BLTZAL
-                if (name & 0x1 > 0) == (self.registers.read(rs) & 0x80000000 == 0) {
+                if (name & 0x1 > 0) == (rs_val & 0x80000000 == 0) {
                     let offset = (imm as i32) << 2;
                     let offset = offset.wrapping_add(4);
                     self.registers.delayed_branch =
@@ -335,7 +336,7 @@ impl Cpu {
             }
             // BGTZ - Branch on greater than zero
             0x1C000000..=0x1FFFFFFF => {
-                let rs = (opcode & 0x03E00000) >> 21;
+                let rs = (opcode >> 21) & 0x1F;
                 let imm = (opcode & 0x0000FFFF) as i16;
 
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("BGTZ ${rs}, {:04X}", imm), self.registers);
@@ -351,7 +352,7 @@ impl Cpu {
             }
             // BLEZ - Branch on Less than or equal to zero
             0x18000000..=0x1BFFFFFF => {
-                let rs = (opcode & 0x03E00000) >> 21;
+                let rs = (opcode >> 21) & 0x1F;
                 let imm = (opcode & 0x0000FFFF) as i16;
 
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("BLEZ ${rs}, {:04X}", imm), self.registers);
@@ -367,9 +368,9 @@ impl Cpu {
             }
             // BNE
             0x14000000..=0x17FFFFFF => {
-                let rs = (opcode & 0x03E00000) >> 21;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
                 let imm = (opcode & 0x0000FFFF) as i16;
-                let rt = (opcode & 0x001F0000) >> 16;
 
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("BNE ${rs}, ${rt}, {:04X}", imm), self.registers);
 
@@ -409,8 +410,8 @@ impl Cpu {
             }
             // LB - Load Byte
             0x80000000..=0x83FFFFFF => {
-                let base = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
+                let base = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("LB ${rt}, {:04X}(${:02})", offset, base), self.registers);
@@ -423,8 +424,8 @@ impl Cpu {
             }
             // LBU - Load Byte Unsigned
             0x90000000..=0x93FFFFFF => {
-                let base = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
+                let base = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
                 let asm = format!("LBU ${rt}, {:04X}(${:02X})", offset, base);
@@ -438,14 +439,19 @@ impl Cpu {
             }
             // LH - Load Halfword
             0x84000000..=0x87FFFFFF => {
-                let base = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
+                let base = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
                 let asm = format!("LH ${rt}, {:04X}({:02X})", offset, base);
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
+
+                // if addr % 2 == 0 {
+                //     return Err(ExceptionType::AddressErrorLoad(addr))
+                // }
+
                 let halfword = self.bus.mem_read_halfword(addr)? as i16;
                 self.registers.write(rt, halfword as i32 as u32);
 
@@ -453,8 +459,8 @@ impl Cpu {
             }
             // LHU - Load Halfword Unsigned
             0x94000000..=0x97FFFFFF => {
-                let base = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
+                let base = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
                 let asm = format!("LHU ${rt}, {:04X}({:02X})", offset, base);
@@ -468,7 +474,7 @@ impl Cpu {
             }
             // LUI - Load Upper Immediate
             0x3C000000..=0x3C1FFFFF => {
-                let rt = (opcode & 0x001F0000) >> 16;
+                let rt = (opcode >> 16) & 0x1F;
                 let imm = opcode & 0x0000FFFF;
 
                 let asm = format!("LUI ${rt}, {:04X}", imm);
@@ -480,8 +486,8 @@ impl Cpu {
             }
             // LW - Load Word
             0x8C000000..=0x8FFFFFFF => {
-                let base = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
+                let base = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
                 let asm = format!("LW ${rt}, {:04X}(${base})", offset);
@@ -494,8 +500,8 @@ impl Cpu {
             }
             // LWL - Load Word Left
             0x88000000..=0x8BFFFFFF => {
-                let base = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
+                let base = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
                 let asm = format!("LWL ${rt}, {:04X}({:02X})", offset, base);
@@ -506,40 +512,7 @@ impl Cpu {
                     .bus
                     .mem_read_word(addr as u32 & 0xFFFFFFFC)?
                     .to_le_bytes();
-                let [_, r1, r2, r3] = self.registers.read(rt).to_le_bytes();
-                match addr % 4 {
-                    0 => self
-                        .registers
-                        .write(rt, u32::from_le_bytes([b0, b1, b2, b3])),
-                    1 => self
-                        .registers
-                        .write(rt, u32::from_le_bytes([b1, b2, b3, r3])),
-                    2 => self
-                        .registers
-                        .write(rt, u32::from_le_bytes([b2, b3, r2, r3])),
-                    3 => self
-                        .registers
-                        .write(rt, u32::from_le_bytes([b3, r1, r2, r3])),
-                    _ => panic!("Impossible"),
-                };
-
-                Ok(())
-            }
-            // LWR - Load Word Right
-            0x98000000..=0x9BFFFFFF => {
-                let base = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
-                let offset = (opcode & 0x0000FFFF) as i16;
-
-                let asm = format!("LWR ${rt}, {:04X}(${base})", offset);
-                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
-
-                let addr = self.registers.read(base).wrapping_add_signed(offset as i32) as usize;
-                let [b0, b1, b2, b3] = self
-                    .bus
-                    .mem_read_word(addr as u32 & 0xFFFFFFFC)?
-                    .to_le_bytes();
-                let [r0, r1, r2, _] = self.registers.read(rt).to_le_bytes();
+                let [r0, r1, r2, r3] = self.registers.read(rt).to_le_bytes();
                 match addr % 4 {
                     0 => self
                         .registers
@@ -553,6 +526,39 @@ impl Cpu {
                     3 => self
                         .registers
                         .write(rt, u32::from_le_bytes([b0, b1, b2, b3])),
+                    _ => panic!("Impossible"),
+                };
+
+                Ok(())
+            }
+            // LWR - Load Word Right
+            0x98000000..=0x9BFFFFFF => {
+                let base = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
+                let offset = (opcode & 0x0000FFFF) as i16;
+
+                let asm = format!("LWR ${rt}, {:04X}(${base})", offset);
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
+
+                let addr = self.registers.read(base).wrapping_add_signed(offset as i32) as usize;
+                let [b0, b1, b2, b3] = self
+                    .bus
+                    .mem_read_word(addr as u32 & 0xFFFFFFFC)?
+                    .to_le_bytes();
+                let [r0, r1, r2, r3] = self.registers.read(rt).to_le_bytes();
+                match addr % 4 {
+                    0 => self
+                        .registers
+                        .write(rt, u32::from_le_bytes([b0, b1, b2, b3])),
+                    1 => self
+                        .registers
+                        .write(rt, u32::from_le_bytes([b1, b2, b3, r3])),
+                    2 => self
+                        .registers
+                        .write(rt, u32::from_le_bytes([b2, b3, r2, r3])),
+                    3 => self
+                        .registers
+                        .write(rt, u32::from_le_bytes([b3, r1, r2, r3])),
                     _ => panic!("Impossible"),
                 };
 
@@ -573,8 +579,8 @@ impl Cpu {
             }
             // SB - Store Byte
             0xA0000000..=0xA3FFFFFF => {
-                let base = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
+                let base = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
                 let asm = format!("SB ${rt}, {:04X}(${base})", offset);
@@ -588,8 +594,8 @@ impl Cpu {
             }
             // SH - Store Halfword
             0xA4000000..=0xA7FFFFFF => {
-                let base = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
+                let base = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
                 let asm = format!("SH ${rt}, {:04X}(${base})", offset);
@@ -606,8 +612,8 @@ impl Cpu {
             }
             // SLTI - Set on Less Than Immediate
             0x28000000..=0x2BFFFFFF => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
                 let imm = (opcode & 0x0000FFFF) as i16;
 
                 let asm = format!("SLTI ${rt}, ${rs}, {:04X}", imm);
@@ -623,8 +629,8 @@ impl Cpu {
             }
             // SLTIU
             0x2C000000..=0x2FFFFFFF => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
                 let imm = (opcode & 0x0000FFFF) as i16;
 
                 let asm = format!("SLTIU ${rt}, ${rs}, {:04X}", imm);
@@ -640,8 +646,8 @@ impl Cpu {
             }
             // SW - Store Word
             0xAC000000..=0xAFFFFFFF => {
-                let base = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
+                let base = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
                 let asm = format!("SW ${rt}, {:04X}(${})", offset, base);
@@ -657,46 +663,11 @@ impl Cpu {
             }
             // SWL - Store Word Left
             0xA8000000..=0xABFFFFFF => {
-                let base = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
+                let base = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
                 let offset = (opcode & 0x0000FFFF) as i16;
 
                 let asm = format!("SWL ${rt}, {:04X}({:02X})", offset, base);
-                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
-
-                let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
-                let [b0, b1, b2, b3] = self.registers.read(rt).to_le_bytes();
-                match addr % 4 {
-                    0 => {
-                        self.bus.mem_write_byte(addr, b0)?;
-                        self.bus.mem_write_byte(addr + 1, b1)?;
-                        self.bus.mem_write_byte(addr + 2, b2)?;
-                        self.bus.mem_write_byte(addr + 3, b3)?;
-                    }
-                    1 => {
-                        self.bus.mem_write_byte(addr, b0)?;
-                        self.bus.mem_write_byte(addr + 1, b1)?;
-                        self.bus.mem_write_byte(addr + 2, b2)?;
-                    }
-                    2 => {
-                        self.bus.mem_write_byte(addr, b0)?;
-                        self.bus.mem_write_byte(addr + 1, b1)?;
-                    }
-                    3 => {
-                        self.bus.mem_write_byte(addr, b0)?;
-                    }
-                    _ => panic!("Impossible"),
-                };
-
-                Ok(())
-            }
-            // SWR - Store Word Right
-            0xB8000000..=0xBBFFFFFF => {
-                let base = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
-                let offset = (opcode & 0x0000FFFF) as i16;
-
-                let asm = format!("SWR ${rt}, {:04X}({:02X})", offset, base);
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
@@ -725,10 +696,54 @@ impl Cpu {
 
                 Ok(())
             }
+            // SWR - Store Word Right
+            0xB8000000..=0xBBFFFFFF => {
+                let base = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
+                let offset = (opcode & 0x0000FFFF) as i16;
+
+                let asm = format!("SWR ${rt}, {:04X}({:02X})", offset, base);
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
+
+                let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
+                let [b0, b1, b2, b3] = self.registers.read(rt).to_le_bytes();
+                match addr % 4 {
+                    0 => {
+                        self.bus.mem_write_byte(addr, b0)?;
+                        self.bus.mem_write_byte(addr + 1, b1)?;
+                        self.bus.mem_write_byte(addr + 2, b2)?;
+                        self.bus.mem_write_byte(addr + 3, b3)?;
+                    }
+                    1 => {
+                        // self.bus.mem_write_byte(addr, b3)?;
+                        // self.bus.mem_write_byte(addr - 1, b2)?;
+                        self.bus.mem_write_byte(addr, b0)?;
+                        self.bus.mem_write_byte(addr + 1, b1)?;
+                        self.bus.mem_write_byte(addr + 2, b2)?;
+                    }
+                    2 => {
+                        // self.bus.mem_write_byte(addr, b3)?;
+                        // self.bus.mem_write_byte(addr - 1, b2)?;
+                        // self.bus.mem_write_byte(addr - 2, b1)?;
+                        self.bus.mem_write_byte(addr, b0)?;
+                        self.bus.mem_write_byte(addr + 1, b1)?;
+                    }
+                    3 => {
+                        // self.bus.mem_write_byte(addr, b3)?;
+                        // self.bus.mem_write_byte(addr - 1, b2)?;
+                        // self.bus.mem_write_byte(addr - 2, b1)?;
+                        // self.bus.mem_write_byte(addr - 3, b0)?;
+                        self.bus.mem_write_byte(addr, b0)?;
+                    }
+                    _ => panic!("Impossible"),
+                };
+
+                Ok(())
+            }
             // XORI
             0x38000000..=0x3BFFFFFF => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
                 let imm = opcode & 0x0000FFFF;
 
                 let asm = format!("SLTIU ${rt}, ${rs}, {:04X}", imm);
@@ -815,8 +830,8 @@ impl Cpu {
             }
             // MFC0 - Move From Coprocessor 0
             0x40000000..=0x401FFFFF if opcode & 0x7FF == 0 => {
-                let rt = (opcode & 0x001F0000) >> 16;
-                let rd = (opcode & 0x0000F800) >> 11;
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
 
                 let asm = format!("MFC0 ${rt}, ${rd}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -842,8 +857,8 @@ impl Cpu {
             }
             // MTC0 - Move To Coprocessor 0
             0x40800000..=0x409FFFFF if opcode & 0x7FF == 0 => {
-                let rt = (opcode & 0x001F0000) >> 16;
-                let rd = (opcode & 0x0000F800) >> 11;
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
 
                 let asm = format!("MTC0 ${rt}, ${rd}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -881,9 +896,9 @@ impl Cpu {
             // Special
             // ADD
             op if op & 0xFC00003F == 0x00000020 => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
-                let rd = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
 
                 let asm = format!("ADD ${rd}, ${rs}, ${rt}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -899,9 +914,9 @@ impl Cpu {
             }
             // ADDU
             op if op & 0xFC00003F == 0x00000021 => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
-                let rd = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
 
                 let asm = format!("ADDU ${rd}, ${rs}, ${rt}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -913,9 +928,9 @@ impl Cpu {
             }
             // AND
             op if op & 0xFC00003F == 0x00000024 => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
-                let rd = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
 
                 let asm = format!("AND ${rd}, ${rs}, ${rt}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -943,7 +958,7 @@ impl Cpu {
                 let divisor = self.registers.read(rt) as i32;
                 if divisor == 0 {
                     self.registers.hi = dividend as u32;
-                    if dividend > 0 {
+                    if dividend >= 0 {
                         self.registers.lo = 0xFFFFFFFF;
                     } else {
                         self.registers.lo = 1;
@@ -952,11 +967,9 @@ impl Cpu {
                     self.registers.lo = 0x80000000;
                     self.registers.hi = 0;
                 } else {
-                    self.registers.lo = dividend.div_euclid(divisor) as u32;
-                    self.registers.hi = dividend.rem_euclid(divisor) as u32;
+                    self.registers.lo = (dividend / divisor) as u32;
+                    self.registers.hi = (dividend % divisor) as u32;
                 }
-
-                //println!("Divide {:08X} by {:08X}. Got {:08X} with remainder of {:08X}", dividend, divisor, self.registers.lo, self.registers.hi);
 
                 Ok(())
             }
@@ -973,18 +986,18 @@ impl Cpu {
 
                 if divisor == 0 {
                     self.registers.hi = dividend;
-                    self.registers.lo = 1;
+                    self.registers.lo = 0xFFFFFFFF;
                 } else {
-                    self.registers.lo = dividend.div_euclid(divisor);
-                    self.registers.hi = dividend.rem_euclid(divisor);
+                    self.registers.lo = dividend / divisor;
+                    self.registers.hi = dividend % divisor;
                 }
 
                 Ok(())
             }
             // JALR - Jump and Link Register
             op if op & 0xFC00003F == 0x00000009 => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rd = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode >> 21) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
 
                 let asm = format!("JALR ${rd}, ${rs}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -997,21 +1010,19 @@ impl Cpu {
             }
             // JR
             op if op & 0xFC00003F == 0x00000008 => {
-                let rs = (opcode & 0x03E00000) >> 21;
+                let rs = (opcode >> 21) & 0x1F;
                 let target = self.registers.read(rs);
 
                 let asm = format!("JR ${rs}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
 
-                if target & 0b11 == 0 {
-                    self.registers.delayed_branch = Some(target);
-                }
+                self.registers.delayed_branch = Some(target);
 
                 Ok(())
             }
             // MFHI - Move From HI
             op if op & 0xFFFF07FF == 0x00000010 => {
-                let rd = (opcode & 0x0000F800) >> 11;
+                let rd = (opcode >> 11) & 0x1F;
                 self.registers.write(rd, self.registers.hi);
 
                 let asm = format!("MFHI ${rd}");
@@ -1021,7 +1032,7 @@ impl Cpu {
             }
             // MFLO - Move From LO
             op if op & 0xFFFF07FF == 0x00000012 => {
-                let rd = (opcode & 0x0000F800) >> 11;
+                let rd = (opcode >> 11) & 0x1F;
                 self.registers.write(rd, self.registers.lo);
 
                 let asm = format!("MFLO ${rd}");
@@ -1031,7 +1042,7 @@ impl Cpu {
             }
             // MTHI - Move To HI
             op if op & 0xFC1FFFFF == 0x00000011 => {
-                let rs = (opcode & 0x03E00000) >> 21;
+                let rs = (opcode >> 21) & 0x1F;
                 self.registers.hi = self.registers.read(rs);
 
                 let asm = format!("MTHI ${rs}");
@@ -1041,7 +1052,7 @@ impl Cpu {
             }
             // MTLO - Move To LO
             op if op & 0xFC1FFFFF == 0x00000013 => {
-                let rs = (opcode & 0x03E00000) >> 21;
+                let rs = (opcode >> 21) & 0x1F;
                 self.registers.lo = self.registers.read(rs);
 
                 let asm = format!("MTLO ${rs}");
@@ -1051,8 +1062,8 @@ impl Cpu {
             }
             // MULT - Multiply Word
             op if op & 0xFC00FFFF == 0x00000018 => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
 
                 let asm = format!("MULT ${rs}, ${rt}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -1068,8 +1079,8 @@ impl Cpu {
             }
             // MULTU - Multiply Unsigned Word
             op if op & 0xFC00FFFF == 0x00000019 => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
 
                 let asm = format!("MULTU ${rs}, ${rt}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -1085,9 +1096,9 @@ impl Cpu {
             }
             // NOR
             op if op & 0xFC0007FF == 0x00000027 => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
-                let rd = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
 
                 let asm = format!("NOR ${rd}, ${rs}, ${rt}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -1099,9 +1110,9 @@ impl Cpu {
             }
             // OR
             op if op & 0xFC0007FF == 0x00000025 => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
-                let rd = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
 
                 let asm = format!("OR ${rd}, ${rs}, ${rt}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -1113,9 +1124,9 @@ impl Cpu {
             }
             // SLL - Shift Word Left Logical
             op if op & 0xFFE0003F == 0x00000000 => {
-                let rt = (opcode & 0x001F0000) >> 16;
-                let rd = (opcode & 0x0000F800) >> 11;
-                let sa = (opcode & 0x000007C0) >> 6;
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
+                let sa = (opcode >> 6) & 0x1F;
 
                 let asm = format!("SLL ${rd}, ${rt}, {sa}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -1126,9 +1137,9 @@ impl Cpu {
             }
             // SLLV - Shift Word Left Logical Variable
             op if op & 0xFC0007FF == 0x00000004 => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
-                let rd = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
 
                 let asm = format!("SLLV ${rd}, ${rt}, ${rs}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -1140,9 +1151,9 @@ impl Cpu {
             }
             // SLT - Set on Less Than
             op if op & 0xFC0007FF == 0x0000002A => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
-                let rd = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
 
                 let asm = format!("SLT ${rd}, ${rs}, ${rt}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -1154,9 +1165,9 @@ impl Cpu {
             }
             // SLTU - Set on Less Than Unsigned
             op if op & 0xFC0007FF == 0x0000002B => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
-                let rd = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
 
                 let asm = format!("SLTU ${rd}, ${rs}, ${rt}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -1168,9 +1179,9 @@ impl Cpu {
             }
             // SRA - Shift Word Right Arithmetic
             op if op & 0xFFE0003F == 0x00000003 => {
-                let rt = (opcode & 0x001F0000) >> 16;
-                let rd = (opcode & 0x0000F800) >> 11;
-                let sa = (opcode & 0x000007C0) >> 6;
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
+                let sa = (opcode >> 6) & 0x1F;
 
                 let asm = format!("SRA ${rd}, ${rt}, {sa}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -1182,9 +1193,9 @@ impl Cpu {
             }
             // SRAV - Shift Word Right Arithmetic Variable
             op if op & 0xFC0007FF == 0x00000007 => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
-                let rd = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
 
                 let asm = format!("SRAV ${rd}, ${rt}, ${rs}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -1197,9 +1208,9 @@ impl Cpu {
             }
             // SRL - Shift Word Right Logical
             op if op & 0xFFE0003F == 0x00000002 => {
-                let rt = (opcode & 0x001F0000) >> 16;
-                let rd = (opcode & 0x0000F800) >> 11;
-                let sa = (opcode & 0x000007C0) >> 6;
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
+                let sa = (opcode >> 6) & 0x1F;
 
                 let asm = format!("SRL ${rd}, ${rt}, {sa}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -1210,9 +1221,9 @@ impl Cpu {
             }
             // SRLV - Shift Word Right Logical Variable
             op if op & 0xFC0007FF == 0x00000006 => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
-                let rd = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
 
                 let asm = format!("SRLV ${rd}, ${rt}, ${rs}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -1224,9 +1235,9 @@ impl Cpu {
             }
             // SUB - Subtract Word
             op if op & 0xFC0007FF == 0x00000022 => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
-                let rd = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
 
                 let asm = format!("SUB ${rd}, ${rs}, {rt}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -1235,7 +1246,7 @@ impl Cpu {
                 let rhs = self.registers.read(rt);
                 let (diff, err) = (lhs as i32).overflowing_sub(rhs as i32); //Cpu::add(lhs, (!rhs).wrapping_add(1));
 
-                if err  {
+                if err {
                     Err(ExceptionType::ArithmeticOverflow)
                 } else {
                     self.registers.write(rd, diff as u32);
@@ -1244,9 +1255,9 @@ impl Cpu {
             }
             // SUBU - Subtract Unsigned Word
             op if op & 0xFC0007FF == 0x00000023 => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
-                let rd = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
 
                 let asm = format!("SUBU ${rd}, ${rs}, {rt}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
@@ -1269,9 +1280,9 @@ impl Cpu {
             }
             // XOR
             op if op & 0xFC0007FF == 0x00000026 => {
-                let rs = (opcode & 0x03E00000) >> 21;
-                let rt = (opcode & 0x001F0000) >> 16;
-                let rd = (opcode & 0x0000F800) >> 11;
+                let rs = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
 
                 let asm = format!("XOR ${rd}, ${rs}, {rt}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);

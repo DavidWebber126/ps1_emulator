@@ -94,15 +94,15 @@ impl CauseRegister {
     // Cause register setters and getters
     pub fn set_exception_code(&mut self, exception: ExceptionType) {
         let code = match exception {
-            ExceptionType::Interrupt => 0,
-            ExceptionType::AddressErrorLoad(_) => 4,
-            ExceptionType::AddressErrorStore(_) => 5,
-            ExceptionType::BusErrorLoad(_) => 7,
-            ExceptionType::Syscall => 8,
-            ExceptionType::Break => 9,
-            ExceptionType::Reserved => 0xA,
-            ExceptionType::CoprocessorUnusable => 0xB,
-            ExceptionType::ArithmeticOverflow => 0xC,
+            ExceptionType::Interrupt => 0x00,
+            ExceptionType::AddressErrorLoad(_) => 0x04,
+            ExceptionType::AddressErrorStore(_) => 0x05,
+            ExceptionType::BusErrorLoad(_) => 0x07,
+            ExceptionType::Syscall => 0x08,
+            ExceptionType::Break => 0x09,
+            ExceptionType::Reserved => 0x0A,
+            ExceptionType::CoprocessorUnusable => 0x0B,
+            ExceptionType::ArithmeticOverflow => 0x0C,
         };
 
         self.0 = (self.0 & 0xFFFFFF83) | (code << 2);
@@ -133,15 +133,15 @@ pub struct StatusRegister(u32);
 
 impl StatusRegister {
     pub fn write(&mut self, val: u32) {
-        self.0 = val & 0x507FFF2F;
+        self.0 = val & 0xF07FFF3F;
     }
 
     pub fn push_interrupt(&mut self) {
-        self.0 = (self.0 & 0xFFFFFFC3) + ((self.0 & 0x0000000F) << 2);
+        self.0 = (self.0 & 0xFFFFFFC3) + ((self.0 & 0xF) << 2);
     }
 
     pub fn pop_interrupt(&mut self) {
-        self.0 = (self.0 & 0xFFFFFFF0) + ((self.0 & 0x0000003C) >> 2);
+        self.0 = (self.0 & 0xFFFFFFF0) + ((self.0 >> 2) & 0xF);
     }
 
     pub fn interrupt_mask(&self) -> u32 {

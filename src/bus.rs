@@ -269,17 +269,19 @@ impl Bus {
     }
 
     pub fn mem_write_byte(&mut self, addr: u32, val: u8) -> Result<(), ExceptionType> {
+        let isc_set = self.cop0.sr.get_isc();
+
         event!(
             target: "ps1_emulator::BUS",
             Level::TRACE,
-            "Attempt to write at address: {:08X} with {:02X}, (actual address used: {:08X})",
+            "Attempt to write at address: {:08X} with {:02X}, (actual address used: {:08X}). IsC set: {isc_set}",
             addr & 0x1FFFFFFF,
             val,
             addr
         );
 
         // If IsC is set, loads and stores go to data cache and not main memory
-        if self.cop0.sr.get_isc() {
+        if isc_set {
             return Ok(());
         }
 
@@ -302,9 +304,9 @@ impl Bus {
                 Ok(())
             }
             // KUSEG Main RAM - Cache enabled
-            0x00100000..=0x001FFFFF => {
+            0x0010000..=0x001FFFFF => {
                 // mirror address to between 0x00100000 and 0x001FFFFF
-                let addr = addr - 0x100000;
+                let addr = addr - 0x10000;
                 self.ram[addr as usize] = val;
                 Ok(())
             }
@@ -595,6 +597,10 @@ impl Bus {
     }
 
     pub fn mem_read_word(&mut self, addr: u32) -> Result<u32, ExceptionType> {
+        if addr & 0b11 > 0 {
+            return Err(ExceptionType::AddressErrorLoad(addr))
+        }
+
         match addr {
             0x1F801810 => Ok(self.gpu.gpuread()),
             0x1F801814 => Ok(self.gpu.gpustat()),
@@ -609,6 +615,10 @@ impl Bus {
     }
 
     pub fn mem_write_word(&mut self, addr: u32, val: u32) -> Result<(), ExceptionType> {
+        if addr & 0b11 > 0 {
+            return Err(ExceptionType::AddressErrorLoad(addr))
+        }
+
         // If isc is set, loads and stores go to data cache and not main memory
         if self.cop0.sr.get_isc() {
             return Ok(());
@@ -637,6 +647,10 @@ impl Bus {
     }
 
     pub fn mem_read_halfword(&mut self, addr: u32) -> Result<u16, ExceptionType> {
+        if addr & 0b1 > 0 {
+            return Err(ExceptionType::AddressErrorLoad(addr))
+        }
+
         Ok(u16::from_le_bytes([
             self.mem_read_byte(addr)?,
             self.mem_read_byte(addr + 1)?,
@@ -644,6 +658,10 @@ impl Bus {
     }
 
     pub fn mem_write_halfword(&mut self, addr: u32, val: u16) -> Result<(), ExceptionType> {
+        if addr & 0b1 > 0 {
+            return Err(ExceptionType::AddressErrorLoad(addr))
+        }
+        
         // If isc is set, loads and stores go to data cache and not main memory
         if self.cop0.sr.get_isc() {
             return Ok(());

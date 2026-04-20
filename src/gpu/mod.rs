@@ -53,6 +53,7 @@ impl Gpu {
         self.counter += cycles as u64;
 
         if self.counter >= 564480 {
+            event!(target: "ps1_emulator::GPU", Level::DEBUG, "Render Frame");
             self.frame_is_ready = true;
             self.counter -= 564480;
         } else {

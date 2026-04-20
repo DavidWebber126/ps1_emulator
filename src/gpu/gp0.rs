@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use tracing::{Level, event};
+use tracing::{Level, event, span};
 
 const GPUPARAMLIMITS: [u8; 8] = [0, 0, 0, 1, 2, 1, 1, 0];
 
@@ -28,6 +28,12 @@ pub struct Gp0 {
     pub vram: Box<[u8; 1048576]>, // 1024 x 512 grid of pixels. Each pixel is two bytes so total space is 2 * 1024 * 512
     pub params: [u32; 16],
     pub command_buffer: VecDeque<u32>, // Holds at most 16 words (i.e 16 u32s)
+    pub draw_mode: u32,
+    pub texture_window: u32,
+    pub top_left_draw_area: (u16, u16),
+    pub bot_right_draw_area: (u16, u16),
+    pub draw_offset: (i16, i16),
+    pub mask_bits: u8,
 }
 
 impl Gp0 {
@@ -37,11 +43,20 @@ impl Gp0 {
             vram: Box::new([0; 1048576]),
             params: [0; 16],
             command_buffer: VecDeque::with_capacity(16),
+            draw_mode: 0,
+            texture_window: 0,
+            top_left_draw_area: (0, 0),
+            bot_right_draw_area: (0, 0),
+            draw_offset: (0, 0),
+            mask_bits: 0,
         }
     }
 
     pub fn write(&mut self, val: u32) {
+        let span = span!(target: "ps1_emulator::GPU", Level::DEBUG, "GP0");
+        let _ = span.enter();
         event!(target: "ps1_emulator::GPU", Level::DEBUG, "Write to GP0 with {:08X}", val);
+
 
         self.state = match self.state {
             Gp0State::WaitingForCommand => {
@@ -75,7 +90,50 @@ impl Gp0 {
 
                         Gp0State::ReceivingParams { command: 6, idx: 0 }
                     }
-                    7 => todo!(), // Environment commands
+                    7 => {
+                        match val >> 24 {
+                            0xE1 => {
+                                // Draw Mode Setting
+                                self.draw_mode = val;
+
+                                Gp0State::WaitingForCommand
+                            }
+                            0xE2 => {
+                                // Texture Window Setting
+                                self.texture_window = val;
+
+                                Gp0State::WaitingForCommand
+                            }
+                            0xE3 => {
+                                // Set Drawing Area Top Left (X1, Y1)
+                                self.top_left_draw_area.0 = (val & 0x3FF) as u16;
+                                self.top_left_draw_area.1 = ((val >> 10) & 0x3FF) as u16;
+
+                                Gp0State::WaitingForCommand
+                            }
+                            0xE4 => {
+                                // Set Drawing Area Bottom Right (X2, Y2)
+                                self.bot_right_draw_area.0 = (val & 0x3FF) as u16;
+                                self.bot_right_draw_area.1 = ((val >> 10) & 0x3FF) as u16;
+
+                                Gp0State::WaitingForCommand
+                            }
+                            0xE5 => {
+                                // Set Drawing Offset (X, Y)
+                                self.draw_offset.0 = (val & 0x3FF) as i16;
+                                self.draw_offset.1 = ((val >> 11) & 0x3FF) as i16;
+
+                                Gp0State::WaitingForCommand
+                            }
+                            0xE6 => {
+                                // Mask Bit Setting
+                                self.mask_bits = (val & 0xF) as u8;
+
+                                Gp0State::WaitingForCommand
+                            }
+                            _ => panic!("Impossible GP0 Environment Command {:02X}", val >> 24),
+                        }
+                    }
                     _ => {
                         event!(target: "ps1_emulator::GPU", Level::ERROR, "Impossible GP0 command {:08X}", val);
                         panic!("Impossible GPU command {}", val)
@@ -90,7 +148,7 @@ impl Gp0 {
                 self.params[idx as usize] = val;
 
                 if idx >= limit {
-                    event!(target: "ps1_emulator::GPU", Level::TRACE, "All Params received for command {command}");
+                    event!(target: "ps1_emulator::GPU", Level::TRACE, "All Params received for command");
                     // All parameters received. Diatch to execute the command now
                     match command {
                         0 => todo!(), // misc commands
@@ -259,6 +317,7 @@ impl Gp0 {
     }
 
     fn draw_1x1_untextured_rectangle(&mut self) {
+        event!(target: "ps1_emulator::GPU", Level::TRACE, "Draw 1x1 Rect");
         let command = self.params[0];
         let parameter = self.params[1];
 
@@ -274,7 +333,7 @@ impl Gp0 {
 
         let vram_addr = 2 * (1024 * y + x) as usize;
         self.vram[vram_addr] = pixel_lo;
-        self.vram[vram_addr] = pixel_hi;
+        self.vram[vram_addr + 1] = pixel_hi;
     }
 
     pub fn is_sending_data(&self) -> bool {

@@ -177,6 +177,16 @@ impl Bus {
             0x1F801021 => Ok(0x11),
             0x1F801022 => Ok(0x03),
             0x1F801023 => Ok(0x00),
+            // JOY DATA
+            0x1F801040 => Ok(0),
+            0x1F801041 => Ok(0),
+            0x1F801042 => Ok(0),
+            0x1F801043 => Ok(0),
+            // JOY CTRL
+            0x1F80104A => Ok(0),
+            0x1F80104B => Ok(0),
+            0x1F80104C => Ok(0),
+            0x1F80104D => Ok(0),
             // RAM SIZE
             0x1F801060 => Ok(0x88),
             0x1F801061 => Ok(0x0B),
@@ -413,6 +423,16 @@ impl Bus {
             0x1F801021 => Ok(()),
             0x1F801022 => Ok(()),
             0x1F801023 => Ok(()),
+            // JOY_DATA
+            0x1F801040 => Ok(()),
+            0x1F801041 => Ok(()),
+            0x1F801042 => Ok(()),
+            0x1F801043 => Ok(()),
+            // JOY_CTRL
+            0x1F80104A => Ok(()),
+            0x1F80104B => Ok(()),
+            0x1F80104C => Ok(()),
+            0x1F80104D => Ok(()),
             // RAM SIZE
             0x1F801060 => Ok(()),
             0x1F801061 => Ok(()),
@@ -598,7 +618,7 @@ impl Bus {
 
     pub fn mem_read_word(&mut self, addr: u32) -> Result<u32, ExceptionType> {
         if addr & 0b11 > 0 {
-            return Err(ExceptionType::AddressErrorLoad(addr))
+            return Err(ExceptionType::AddressErrorLoad(addr));
         }
 
         match addr {
@@ -616,7 +636,7 @@ impl Bus {
 
     pub fn mem_write_word(&mut self, addr: u32, val: u32) -> Result<(), ExceptionType> {
         if addr & 0b11 > 0 {
-            return Err(ExceptionType::AddressErrorLoad(addr))
+            return Err(ExceptionType::AddressErrorLoad(addr));
         }
 
         // If isc is set, loads and stores go to data cache and not main memory
@@ -648,7 +668,7 @@ impl Bus {
 
     pub fn mem_read_halfword(&mut self, addr: u32) -> Result<u16, ExceptionType> {
         if addr & 0b1 > 0 {
-            return Err(ExceptionType::AddressErrorLoad(addr))
+            return Err(ExceptionType::AddressErrorLoad(addr));
         }
 
         Ok(u16::from_le_bytes([
@@ -659,9 +679,9 @@ impl Bus {
 
     pub fn mem_write_halfword(&mut self, addr: u32, val: u16) -> Result<(), ExceptionType> {
         if addr & 0b1 > 0 {
-            return Err(ExceptionType::AddressErrorLoad(addr))
+            return Err(ExceptionType::AddressErrorLoad(addr));
         }
-        
+
         // If isc is set, loads and stores go to data cache and not main memory
         if self.cop0.sr.get_isc() {
             return Ok(());

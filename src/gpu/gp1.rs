@@ -1,4 +1,4 @@
-use tracing::{Level, event};
+use tracing::{Level, event, span};
 
 pub struct Gp1 {
     pub display_enable: bool,
@@ -30,7 +30,9 @@ impl Gp1 {
     }
 
     pub fn write(&mut self, val: u32) {
-        event!(target: "ps1_emulator::GPU", Level::TRACE, "Write to GP1 with {:08X}", val);
+        let span = span!(target: "ps1_emulator::GPU", Level::DEBUG, "GP1", cmd=val);
+        let _ = span.enter();
+        event!(target: "ps1_emulator::GPU", Level::DEBUG, "Write to GP1 with {:08X}", val);
 
         match val >> 24 {
             0x00 => {

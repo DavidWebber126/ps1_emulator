@@ -2,9 +2,9 @@ use std::{fs, path::PathBuf, time::Instant};
 
 use crate::cpu::Cpu;
 use crate::tracing_setup;
-use eframe::egui::{self, Color32, Event};
+use eframe::egui::{self, Color32, Event, RichText};
 
-use tracing::{Level, event};
+//use tracing::{Level, event};
 
 pub struct GameSelect {
     pub filepaths: Vec<PathBuf>,
@@ -33,14 +33,15 @@ pub struct MyApp {
     game_select: GameSelect,
     screen_texture: egui::TextureHandle,
     frame_buffer: [Color32; 524288],
-    tracing_start_pc: u32,
+    tracing_start_pc: Option<u32>,
     logging_enabled: bool,
     timing_baseline: Instant,
     frame_count: usize,
+    fps: f32,
 }
 
 impl MyApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, folder: PathBuf, tracing_start_pc: u32) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, folder: PathBuf, tracing_start_pc: Option<u32>) -> Self {
         Self {
             cpu: Cpu::new(),
             cpu_rom_loaded: false,
@@ -58,6 +59,7 @@ impl MyApp {
             logging_enabled: false,
             timing_baseline: Instant::now(),
             frame_count: 0,
+            fps: 0.0,
         }
     }
 }
@@ -67,12 +69,12 @@ impl eframe::App for MyApp {
         // Run CPU and associated steps
         if self.cpu_rom_loaded {
             while !self.paused && !self.cpu.bus.gpu.frame_is_ready {
-                if !self.logging_enabled
-                    && self.cpu.registers.program_counter == self.tracing_start_pc
-                {
-                    println!("Begin logging...");
-                    self.logging_enabled = true;
-                    tracing_setup::init_tracing();
+                if let Some(tracing_pc) = self.tracing_start_pc && !self.logging_enabled {
+                    if tracing_pc == self.cpu.registers.program_counter {
+                        println!("Begin logging...");
+                        self.logging_enabled = true;
+                        tracing_setup::init_tracing();
+                    }
                 }
 
                 self.cpu.step_instruction();
@@ -98,26 +100,49 @@ impl eframe::App for MyApp {
                 }
             });
 
-            if self.cpu.bus.gpu.frame_is_ready {
-                event!(Level::TRACE, "Frame is ready");
-                // render frame to screen, get user input, etc
-
-                self.cpu.bus.gpu.render_vram(&mut self.frame_buffer);
-
-                self.screen_texture.set(
-                    egui::ColorImage {
-                        size: [1024, 512],
-                        source_size: egui::Vec2 {
-                            x: 1024.0,
-                            y: 512.0,
-                        },
-                        pixels: self.frame_buffer.to_vec(),
-                    },
-                    egui::TextureOptions::NEAREST,
-                );
-
-                self.cpu.bus.gpu.frame_is_ready = false;
+            // Frame Timings
+            if self.frame_count == 0 {
+                // let frame_time = self.timing_baseline.elapsed().as_secs_f32();
+                // self.fps = frame_time;
+                self.frame_count = 1;
+                self.timing_baseline = Instant::now();
+            } else if self.frame_count == 30 {
+                let thirty_frame_time = self.timing_baseline.elapsed().as_secs_f32();
+                self.frame_count = 1;
+                self.timing_baseline = Instant::now();
+                self.fps = 30.0 / thirty_frame_time;
             }
+
+            self.frame_count += 1;
+
+            self.cpu.bus.gpu.render_vram(&mut self.frame_buffer);
+
+            self.screen_texture.set(
+                egui::ColorImage {
+                    size: [1024, 512],
+                    source_size: egui::Vec2 {
+                        x: 1024.0,
+                        y: 512.0,
+                    },
+                    pixels: self.frame_buffer.to_vec(),
+                },
+                egui::TextureOptions::NEAREST,
+            );
+
+            self.cpu.bus.gpu.frame_is_ready = false;
+
+            let sized_texture =
+                egui::load::SizedTexture::new(self.screen_texture.id(), [1024.0, 512.0]);
+
+            // Render current frame
+            
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.heading(RichText::new(format!("FPS is {}", self.fps)));
+
+                ui.add(
+                    egui::Image::new(sized_texture).fit_to_exact_size(egui::vec2(1024.0, 512.0)),
+                );
+            });
 
             ctx.request_repaint();
         } else {

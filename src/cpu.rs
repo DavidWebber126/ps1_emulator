@@ -10,6 +10,8 @@ pub struct Registers {
     pub hi: u32,
     pub lo: u32,
     pub delayed_branch: Option<u32>,
+    pub delayed_load: (u32, u32),
+    pub delayed_load_next: (u32, u32),
 }
 
 impl Registers {
@@ -20,6 +22,8 @@ impl Registers {
             hi: 0,
             lo: 0,
             delayed_branch: None,
+            delayed_load: (0, 0),
+            delayed_load_next: (0, 0),
         }
     }
 
@@ -31,12 +35,47 @@ impl Registers {
         }
     }
 
+    fn read_lwl_lwr(&self, reg: u32) -> u32 {
+        // LWL and LWR can read in flight delayed loads
+        if reg == self.delayed_load.0 {
+            self.delayed_load.1
+        } else {
+            self.registers[reg as usize]
+        }
+    }
+
     fn write(&mut self, reg: u32, val: u32) {
         match reg {
             0 => {}
             1..=31 => self.registers[reg as usize] = val,
             _ => panic!("Impossible register value"),
         }
+
+        // If register that load was going to write to gets updated then cancel the load
+        if reg == self.delayed_load.0 {
+            self.delayed_load = (0, 0);
+        }
+    }
+
+    fn write_delayed(&mut self, reg: u32, val: u32) {
+        if reg == 0 {
+            return;
+        }
+
+        self.delayed_load_next = (reg, val);
+
+        // If there was a previous delayed load to same register then cancel it
+        if self.delayed_load.0 == reg {
+            self.delayed_load = (0, 0);
+        }
+    }
+
+    fn process_loads(&mut self) {
+        let (register, value) = self.delayed_load;
+        self.registers[register as usize] = value;
+
+        self.delayed_load = self.delayed_load_next;
+        self.delayed_load_next = (0, 0);
     }
 }
 
@@ -228,6 +267,8 @@ impl Cpu {
         } else {
             self.registers.program_counter = next_pc;
         }
+
+        self.registers.process_loads();
     }
 
     fn execute_opcode(&mut self, opcode: u32) -> Result<(), ExceptionType> {
@@ -303,33 +344,42 @@ impl Cpu {
 
                 let rs_val = self.registers.read(rs);
 
-                // BGEZAL and BLTZAL unconditionally set register 31
-                if name & 0b10000 > 0 {
-                    self.registers.registers[31] = self.registers.program_counter + 8;
-                }
-
-                // Both conditions true then BGEZ/BGEZAL, if both false then BLTZ/BLTZAL
-                if (name & 0x1 > 0) == (rs_val & 0x80000000 == 0) {
-                    let offset = (imm as i32) << 2;
-                    let offset = offset.wrapping_add(4);
-                    self.registers.delayed_branch =
-                        Some(self.registers.program_counter.wrapping_add(offset as u32));
-                }
-
                 match name {
-                    0 => {
-                        event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("BLTZ ${rs}, {:04X}", imm), self.registers)
-                    }
-                    1 => {
-                        event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20} {}", format!("BGEZ ${rs}, {:04X}", imm), self.registers)
-                    }
-                    16 => {
+                    0x10 => {
+                        self.registers.registers[31] = self.registers.program_counter + 8;
+                        if rs_val & 0x80000000 > 0 {
+                            let offset = (imm as i32) << 2;
+                            let offset = offset.wrapping_add(4);
+                            self.registers.delayed_branch =
+                                Some(self.registers.program_counter.wrapping_add(offset as u32));
+                        }
                         event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("BLTZAL ${rs}, {:04X}", imm), self.registers)
                     }
-                    17 => {
+                    0x11 => {
+                        self.registers.registers[31] = self.registers.program_counter + 8;
+                        if rs_val & 0x80000000 == 0 {
+                            let offset = (imm as i32) << 2;
+                            let offset = offset.wrapping_add(4);
+                            self.registers.delayed_branch =
+                                Some(self.registers.program_counter.wrapping_add(offset as u32));
+                        }
                         event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("BGEZAL ${rs}, {:04X}", imm), self.registers)
                     }
-                    _ => panic!("Impossible"),
+                    _ => {
+                        // Both conditions true then BGEZ, if both false then BLTZ
+                        if (name & 0x1 > 0) == (rs_val & 0x80000000 == 0) {
+                            let offset = (imm as i32) << 2;
+                            let offset = offset.wrapping_add(4);
+                            self.registers.delayed_branch =
+                                Some(self.registers.program_counter.wrapping_add(offset as u32));
+                        }
+
+                        if name & 0x1 > 0 {
+                            event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20} {}", format!("BGEZ ${rs}, {:04X}", imm), self.registers);
+                        } else {
+                            event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("BLTZ ${rs}, {:04X}", imm), self.registers);
+                        }
+                    }
                 }
 
                 Ok(())
@@ -418,7 +468,7 @@ impl Cpu {
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 let data = self.bus.mem_read_byte(addr)? as i8;
-                self.registers.write(rt, data as i32 as u32);
+                self.registers.write_delayed(rt, data as i32 as u32);
 
                 Ok(())
             }
@@ -433,7 +483,7 @@ impl Cpu {
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 let data = self.bus.mem_read_byte(addr)?;
-                self.registers.write(rt, data as u32);
+                self.registers.write_delayed(rt, data as u32);
 
                 Ok(())
             }
@@ -448,12 +498,8 @@ impl Cpu {
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
 
-                // if addr % 2 == 0 {
-                //     return Err(ExceptionType::AddressErrorLoad(addr))
-                // }
-
                 let halfword = self.bus.mem_read_halfword(addr)? as i16;
-                self.registers.write(rt, halfword as i32 as u32);
+                self.registers.write_delayed(rt, halfword as i32 as u32);
 
                 Ok(())
             }
@@ -468,7 +514,7 @@ impl Cpu {
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
                 self.registers
-                    .write(rt, self.bus.mem_read_halfword(addr)? as u32);
+                    .write_delayed(rt, self.bus.mem_read_halfword(addr)? as u32);
 
                 Ok(())
             }
@@ -494,7 +540,8 @@ impl Cpu {
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
 
                 let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
-                self.registers.write(rt, self.bus.mem_read_word(addr)?);
+                self.registers
+                    .write_delayed(rt, self.bus.mem_read_word(addr)?);
 
                 Ok(())
             }
@@ -507,27 +554,24 @@ impl Cpu {
                 let asm = format!("LWL ${rt}, {:04X}({:02X})", offset, base);
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
 
-                let addr = self.registers.read(base).wrapping_add_signed(offset as i32) as usize;
+                let addr = self
+                    .registers
+                    .read_lwl_lwr(base)
+                    .wrapping_add_signed(offset as i32) as usize;
                 let [b0, b1, b2, b3] = self
                     .bus
                     .mem_read_word(addr as u32 & 0xFFFFFFFC)?
                     .to_le_bytes();
-                let [r0, r1, r2, r3] = self.registers.read(rt).to_le_bytes();
-                match addr % 4 {
-                    0 => self
-                        .registers
-                        .write(rt, u32::from_le_bytes([r0, r1, r2, b0])),
-                    1 => self
-                        .registers
-                        .write(rt, u32::from_le_bytes([r0, r1, b0, b1])),
-                    2 => self
-                        .registers
-                        .write(rt, u32::from_le_bytes([r0, b0, b1, b2])),
-                    3 => self
-                        .registers
-                        .write(rt, u32::from_le_bytes([b0, b1, b2, b3])),
+                let [r0, r1, r2, _] = self.registers.read_lwl_lwr(rt).to_le_bytes();
+                let reg_value = match addr % 4 {
+                    0 => u32::from_le_bytes([r0, r1, r2, b0]),
+                    1 => u32::from_le_bytes([r0, r1, b0, b1]),
+                    2 => u32::from_le_bytes([r0, b0, b1, b2]),
+                    3 => u32::from_le_bytes([b0, b1, b2, b3]),
                     _ => panic!("Impossible"),
                 };
+
+                self.registers.write_delayed(rt, reg_value);
 
                 Ok(())
             }
@@ -540,27 +584,24 @@ impl Cpu {
                 let asm = format!("LWR ${rt}, {:04X}(${base})", offset);
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
 
-                let addr = self.registers.read(base).wrapping_add_signed(offset as i32) as usize;
+                let addr = self
+                    .registers
+                    .read_lwl_lwr(base)
+                    .wrapping_add_signed(offset as i32) as usize;
                 let [b0, b1, b2, b3] = self
                     .bus
                     .mem_read_word(addr as u32 & 0xFFFFFFFC)?
                     .to_le_bytes();
-                let [r0, r1, r2, r3] = self.registers.read(rt).to_le_bytes();
-                match addr % 4 {
-                    0 => self
-                        .registers
-                        .write(rt, u32::from_le_bytes([b0, b1, b2, b3])),
-                    1 => self
-                        .registers
-                        .write(rt, u32::from_le_bytes([b1, b2, b3, r3])),
-                    2 => self
-                        .registers
-                        .write(rt, u32::from_le_bytes([b2, b3, r2, r3])),
-                    3 => self
-                        .registers
-                        .write(rt, u32::from_le_bytes([b3, r1, r2, r3])),
+                let [_, r1, r2, r3] = self.registers.read_lwl_lwr(rt).to_le_bytes();
+                let reg_value = match addr % 4 {
+                    0 => u32::from_le_bytes([b0, b1, b2, b3]),
+                    1 => u32::from_le_bytes([b1, b2, b3, r3]),
+                    2 => u32::from_le_bytes([b2, b3, r2, r3]),
+                    3 => u32::from_le_bytes([b3, r1, r2, r3]),
                     _ => panic!("Impossible"),
                 };
+
+                self.registers.write_delayed(rt, reg_value);
 
                 Ok(())
             }

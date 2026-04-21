@@ -28,11 +28,7 @@ impl Registers {
     }
 
     fn read(&self, reg: u32) -> u32 {
-        match reg {
-            0 => 0,
-            1..=31 => self.registers[reg as usize],
-            _ => panic!("Impossible register value"),
-        }
+        self.registers[reg as usize]
     }
 
     fn read_lwl_lwr(&self, reg: u32) -> u32 {
@@ -127,14 +123,10 @@ impl Cpu {
     }
 
     pub fn sideload_exe(&mut self, exe: &[u8], tty_check: bool) {
-        let bios_span = span!(Level::DEBUG, "BIOS").entered();
+        let bios_span = span!(target: "ps1_emulator::BIOS", Level::DEBUG, "BIOS").entered();
         bios_span.in_scope(|| {
             while self.registers.program_counter != 0x80030000 {
-                self.step_instruction();
-
-                if tty_check {
-                    self.check_for_tty_output();
-                }
+                self.step_instruction(tty_check);
             }
         });
 
@@ -173,7 +165,6 @@ impl Cpu {
             let ch = self.registers.registers[4] as u8 as char;
             event!(target: "ps1_emulator::CPU", Level::TRACE, "TTY Output: {ch}");
             print!("{ch}");
-            //std::io::stdout().flush().unwrap();
         }
     }
 
@@ -212,7 +203,7 @@ impl Cpu {
         }
     }
 
-    pub fn step_instruction(&mut self) {
+    pub fn step_instruction(&mut self, tty_check: bool) {
         let span = span!(
             Level::DEBUG,
             "CPU Step",
@@ -222,10 +213,15 @@ impl Cpu {
 
         // Check for interrupts
         // Set cause bit (or clear it) if a hardware interrupt is ready
+        event!(target: "ps1_emulator::CPU", Level::TRACE, "Check Interrupt");
         self.bus
             .cop0
             .cause
             .set_interrupt_pending(self.bus.interrupts.stat & self.bus.interrupts.mask > 0);
+
+        if tty_check {
+            self.check_for_tty_output();
+        }
 
         // Execute interrupt if SR allows
         if self.bus.cop0.sr.interrupt_enabled()
@@ -243,13 +239,15 @@ impl Cpu {
                 ExceptionType::AddressErrorLoad(self.registers.program_counter),
                 false,
             );
-            return;
+            return
         }
 
         let opcode = self
             .bus
             .mem_read_word(self.registers.program_counter)
-            .expect("Issue with opcode");
+            .unwrap();
+
+        event!(target: "ps1_emulator::CPU", Level::TRACE, "Got opcode: {:08X}", opcode);
 
         // If there is a branch delay, go to branch. Otherwise go to next instruction word
         let (next_pc, in_delay_slot) = match self.registers.delayed_branch.take() {
@@ -257,6 +255,8 @@ impl Cpu {
             None => (self.registers.program_counter + 4, false),
         };
 
+        self.registers.process_loads();
+        
         // Let each instruction take two ticks
         // Perform before exception handler bc instruction was already executed
         self.bus.tick(2);
@@ -267,12 +267,9 @@ impl Cpu {
         } else {
             self.registers.program_counter = next_pc;
         }
-
-        self.registers.process_loads();
     }
 
     fn execute_opcode(&mut self, opcode: u32) -> Result<(), ExceptionType> {
-        event!(target: "ps1_emulator::CPU", Level::TRACE, "Got opcode: {:08X}", opcode);
         match opcode {
             // ADDI
             0x20000000..=0x23FFFFFF => {

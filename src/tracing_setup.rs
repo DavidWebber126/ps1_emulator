@@ -17,17 +17,11 @@ pub fn init_tracing() {
         .with_writer(log_file)
         .with_ansi(false)
         //.without_time()
-        .with_filter(EnvFilter::from_default_env())
-        .with_filter(filter::filter_fn(|metadata| {
-            (*metadata).target().contains("ps1_emulator") && ((*metadata).name() != "BIOS")
-        }));
+        .with_filter(EnvFilter::from_default_env());
 
     // Layer to write to stdout
     let fmt_layer = layer()
-        .with_filter(filter::LevelFilter::INFO)
-        .with_filter(filter::filter_fn(|metadata| {
-            (*metadata).target().contains("ps1_emulator")
-        }));
+        .with_filter(filter::LevelFilter::INFO);
 
     tracing_subscriber::registry()
         .with(fmt_layer)

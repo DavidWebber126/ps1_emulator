@@ -40,7 +40,7 @@ impl Bus {
     pub fn tick(&mut self, cycles: u32) {
         self.gpu.tick(cycles);
 
-        for _ in 0..cycles {
+        for _ in 0..2 {
             if self.timer0.tick() {
                 self.interrupts.stat |= 0x00000010
             }
@@ -646,12 +646,10 @@ impl Bus {
 
         match addr {
             0x1F801810 => {
-                event!(target: "ps1_emulator::BUS", Level::TRACE, "Write to GP0 with {:08X}", val);
                 self.gpu.gp0.write(val);
                 Ok(())
             }
             0x1F801814 => {
-                event!(target: "ps1_emulator::BUS", Level::TRACE, "Write to GP1 with {:08X}", val);
                 self.gpu.gp1.write(val);
                 Ok(())
             }

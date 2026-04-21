@@ -41,13 +41,13 @@ pub struct MyApp {
 }
 
 impl MyApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, folder: PathBuf, tracing_start_pc: Option<u32>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, folder: PathBuf, tty_output: bool, tracing_start_pc: Option<u32>) -> Self {
         Self {
             cpu: Cpu::new(),
             cpu_rom_loaded: false,
             paused: false,
             //reload_handle,
-            tty_output: true,
+            tty_output,
             game_select: GameSelect::new(folder),
             screen_texture: cc.egui_ctx.load_texture(
                 "Noise",
@@ -77,11 +77,11 @@ impl eframe::App for MyApp {
                     }
                 }
 
-                self.cpu.step_instruction();
+                // if self.logging_enabled {
+                //     event!(Level::TRACE, "In While Loop");
+                // }
 
-                if self.tty_output {
-                    self.cpu.check_for_tty_output();
-                }
+                self.cpu.step_instruction(self.tty_output);
             }
 
             //user input

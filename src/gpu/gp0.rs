@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use tracing::{Level, event, span};
+use tracing::{Level, event};
 
 const GPUPARAMLIMITS: [u8; 8] = [0, 0, 0, 1, 2, 1, 1, 0];
 
@@ -53,8 +53,8 @@ impl Gp0 {
     }
 
     pub fn write(&mut self, val: u32) {
-        let span = span!(target: "ps1_emulator::GPU", Level::DEBUG, "GP0");
-        let _ = span.enter();
+        // let span = span!(target: "ps1_emulator::GPU", Level::DEBUG, "GP0");
+        // let _ = span.enter();
         event!(target: "ps1_emulator::GPU", Level::DEBUG, "Write to GP0 with {:08X}", val);
 
 
@@ -143,7 +143,7 @@ impl Gp0 {
             Gp0State::ReceivingParams { command, idx } => {
                 let limit = GPUPARAMLIMITS[command as usize];
 
-                event!(target: "ps1_emulator::GPU", Level::TRACE, "Parameter {:08X} received", val);
+                event!(target: "ps1_emulator::GPU", Level::TRACE, "Parameter received");
 
                 self.params[idx as usize] = val;
 
@@ -225,7 +225,7 @@ impl Gp0 {
     }
 
     fn cpu_to_vram_process(&mut self, word: u32, fields: &mut VramCopyFields) -> Gp0State {
-        event!(target: "ps1_emulator::GPU", Level::TRACE, "CPU to VRAM Data: {:08X}, current_row: {}, current_col: {}", word, fields.current_row, fields.current_col);
+        event!(target: "ps1_emulator::GPU", Level::TRACE, "CPU to VRAM Data");
 
         for i in 0..2 {
             let halfword = (word >> (16 * i)) as u16;
@@ -283,7 +283,7 @@ impl Gp0 {
             _ => panic!("VRAM to CPU only when GP0 is in sending data state"),
         };
 
-        event!(target: "ps1_emulator::GPU", Level::TRACE, "VRAM to CPU Data: current_row: {}, current_col: {}", fields.current_row, fields.current_col);
+        event!(target: "ps1_emulator::GPU", Level::TRACE, "VRAM to CPU Data");
 
         let mut out = [0u8; 4];
         for i in 0..2 {

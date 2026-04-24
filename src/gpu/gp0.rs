@@ -16,7 +16,7 @@ impl Color {
         Self { r, g, b, a }
     }
 
-    pub fn to_tuple(&self) -> (u8, u8, u8, u8) {
+    pub fn to_tuple(self) -> (u8, u8, u8, u8) {
         (self.r, self.g, self.b, self.a)
     }
 }
@@ -69,7 +69,7 @@ impl Gp0 {
     pub fn new() -> Self {
         Self {
             state: Gp0State::WaitingForCommand,
-            vram: Box::new([Color::default(); 524288]),
+            vram: Box::new([Color::from(0, 0, 0, 255); 524288]),
             params: [0; 16],
             command_buffer: VecDeque::with_capacity(16),
             draw_mode: 0,
@@ -87,7 +87,21 @@ impl Gp0 {
         let g = convert_5bit_to_8bit((val >> 5) & 0x1F);
         let b = convert_5bit_to_8bit((val >> 10) & 0x1F);
 
-        self.vram[addr] = Color::from(r, g, b, 255)
+        self.vram[addr] = Color::from(r, g, b, 255);
+    }
+
+    fn write_vram_alpha(&mut self, addr: usize, val: u16) {
+        let r = convert_5bit_to_8bit(val & 0x1F);
+        let g = convert_5bit_to_8bit((val >> 5) & 0x1F);
+        let b = convert_5bit_to_8bit((val >> 10) & 0x1F);
+
+        let prev_color = self.vram[addr];
+
+        let new_r = r / 2 + prev_color.r / 2;
+        let new_g = g / 2 + prev_color.g / 2;
+        let new_b = b / 2 + prev_color.b / 2;
+
+        self.vram[addr] = Color::from(new_r, new_g, new_b, 255);
     }
 
     fn read_vram(&self, addr: usize) -> u16 {
@@ -117,12 +131,10 @@ impl Gp0 {
                     3 => {
                         // rectangle primitive
                         // Store command in params as it will be needed later
-                        event!(target: "ps1_emulator::GPU", Level::TRACE, "GP0 Rectangle Primitive command received");
 
                         let is_textured = val & 0x4000000 > 0;
                         let is_varsized = val & 0x18000000 == 0;
 
-                        
                         let command = match (is_varsized, is_textured) {
                             (true, true) => Commands::TexturedSizeRectangle,
                             (true, false) => Commands::SizeRectangle,
@@ -130,27 +142,38 @@ impl Gp0 {
                             (false, false) => Commands::Rectangle,
                         };
 
+                        event!(target: "ps1_emulator::GPU", Level::TRACE, "GP0 Rectangle ({:?}) Primitive command received", command);
+
                         self.params[0] = val;
-                        
+
                         Gp0State::ReceivingParams { command, idx: 1 }
                     }
                     4 => {
                         // VRAM to VRAM blit
                         event!(target: "ps1_emulator::GPU", Level::TRACE, "GP0 VRAM to VRAM BLIT received");
 
-                        Gp0State::ReceivingParams { command: Commands::VramToVram, idx: 0 }
+                        Gp0State::ReceivingParams {
+                            command: Commands::VramToVram,
+                            idx: 0,
+                        }
                     }
                     5 => {
                         // CPU to VRAM blit
                         event!(target: "ps1_emulator::GPU", Level::TRACE, "GP0 CPU to VRAM BLIT received");
 
-                        Gp0State::ReceivingParams { command: Commands::CpuToVram, idx: 0 }
+                        Gp0State::ReceivingParams {
+                            command: Commands::CpuToVram,
+                            idx: 0,
+                        }
                     }
                     6 => {
                         // VRAM to CPU blit
                         event!(target: "ps1_emulator::GPU", Level::TRACE, "GP0 VRAM to CPU BLIT received");
 
-                        Gp0State::ReceivingParams { command: Commands::VramToCpu, idx: 0 }
+                        Gp0State::ReceivingParams {
+                            command: Commands::VramToCpu,
+                            idx: 0,
+                        }
                     }
                     0 | 7 => {
                         match val >> 24 {
@@ -162,7 +185,10 @@ impl Gp0 {
 
                                 self.params[0] = val;
 
-                                Gp0State::ReceivingParams { command: Commands::VramFill, idx: 1 }
+                                Gp0State::ReceivingParams {
+                                    command: Commands::VramFill,
+                                    idx: 1,
+                                }
                             }
                             0xE1 => {
                                 // Draw Mode Setting
@@ -228,13 +254,25 @@ impl Gp0 {
                         // 2 => todo!(), // line primitive
                         Commands::Rectangle => {
                             // rectangle primitive
-                            self.draw_1x1_untextured_rectangle();
+                            let dimension = match (self.params[0] >> 27) & 0b11 {
+                                1 => 1,
+                                2 => 8,
+                                3 => 16,
+                                _ => panic!("Impossible"),
+                            };
+                            self.draw_untextured_rectangle(dimension, dimension);
+                            Gp0State::WaitingForCommand
+                        }
+                        Commands::SizeRectangle => {
+                            let width = val & 0x3FF;
+                            let height = (val >> 16) & 0x1FF;
+                            self.draw_untextured_rectangle(width, height);
                             Gp0State::WaitingForCommand
                         }
                         Commands::VramToVram => {
                             self.vram_copy();
                             Gp0State::WaitingForCommand
-                        },
+                        }
                         Commands::CpuToVram => {
                             // CPU to VRAM blit
                             self.cpu_to_vram_init()
@@ -412,6 +450,34 @@ impl Gp0 {
         }
     }
 
+    fn draw_untextured_rectangle(&mut self, width: u32, height: u32) {
+        let command = self.params[0];
+
+        let use_alpha = command & 0x2000000 > 0;
+
+        let r = (command & 0xFF) >> 3;
+        let g = ((command >> 8) & 0xFF) >> 3;
+        let b = ((command >> 16) & 0xFF) >> 3;
+
+        let pixel = (r | (g << 5) | (b << 10)) as u16;
+
+        let vram_x = self.params[1] & 0x3FF;
+        let vram_y = (self.params[1] >> 16) & 0x1FF;
+
+        for y in 0..height {
+            for x in 0..width {
+                let vram_row = ((vram_y + y) & 0x1FF) as usize;
+                let vram_col = ((vram_x + x) & 0x3FF) as usize;
+                let vram_addr = 1024 * vram_row + vram_col;
+                if use_alpha {
+                    self.write_vram_alpha(vram_addr, pixel);
+                } else {
+                    self.write_vram(vram_addr, pixel);
+                }
+            }
+        }
+    }
+
     fn rect_fill(&mut self) {
         let command = self.params[0];
         let vram_x = self.params[1] & 0x3FF;
@@ -433,24 +499,6 @@ impl Gp0 {
                 self.write_vram(vram_addr, pixel);
             }
         }
-    }
-
-    fn draw_1x1_untextured_rectangle(&mut self) {
-        event!(target: "ps1_emulator::GPU", Level::TRACE, "Draw 1x1 Rect");
-        let command = self.params[0];
-        let parameter = self.params[1];
-
-        let r = (command & 0xFF) >> 3;
-        let g = ((command >> 8) & 0xFF) >> 3;
-        let b = ((command >> 16) & 0xFF) >> 3;
-
-        let pixel = (r | (g << 5) | (b << 10)) as u16;
-
-        let x = parameter & 0x3FF;
-        let y = (parameter >> 16) & 0x1FF;
-
-        let vram_addr = (1024 * y + x) as usize;
-        self.write_vram(vram_addr, pixel);
     }
 
     pub fn is_sending_data(&self) -> bool {

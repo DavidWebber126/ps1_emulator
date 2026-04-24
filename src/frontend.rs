@@ -27,6 +27,7 @@ impl GameSelect {
 pub struct MyApp {
     cpu: Cpu,
     cpu_rom_loaded: bool,
+    play_bios: bool,
     paused: bool,
     tty_output: bool,
     game_select: GameSelect,
@@ -48,6 +49,7 @@ impl MyApp {
         Self {
             cpu: Cpu::new(),
             cpu_rom_loaded: false,
+            play_bios: false,
             paused: false,
             tty_output,
             game_select: GameSelect::new(folder),
@@ -95,7 +97,7 @@ impl eframe::App for MyApp {
                             ..
                         } => std::process::exit(0),
                         Event::Key {
-                            key: egui::Key::P, 
+                            key: egui::Key::P,
                             pressed: true,
                             ..
                         } => {
@@ -169,7 +171,7 @@ impl eframe::App for MyApp {
                     }
                 });
 
-                if let Some(game) = &self.game_select.selected_game {
+                if self.play_bios || self.game_select.selected_game.is_some() {
                     // Load BIOS from folder
                     let bios_path = match fs::read_dir("bios/").unwrap().next() {
                         Some(Ok(path)) => path.path(),
@@ -182,12 +184,14 @@ impl eframe::App for MyApp {
                     println!("BIOS size is {:08X}", bios.len());
                     self.cpu.load_bios(&bios);
 
-                    // Load exe
-                    let exe = fs::read(game).unwrap();
-                    println!("Exe size (including header): {:08X}", exe.len());
+                    if let Some(game) = &self.game_select.selected_game {
+                        // Load exe
+                        let exe = fs::read(game).unwrap();
+                        println!("Exe size (including header): {:08X}", exe.len());
 
-                    // Runs CPU until exe can be loaded
-                    self.cpu.sideload_exe(&exe, self.tty_output);
+                        // Runs CPU until exe can be loaded
+                        self.cpu.sideload_exe(&exe, self.tty_output);
+                    }
 
                     self.cpu_rom_loaded = true;
                 } else {
@@ -201,6 +205,8 @@ impl eframe::App for MyApp {
                             );
                         }
                     });
+
+                    ui.checkbox(&mut self.play_bios, "Play BIOS");
                 }
             });
         };

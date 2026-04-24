@@ -4,7 +4,6 @@ mod gp1;
 use gp0::Gp0;
 use gp1::Gp1;
 
-use eframe::egui::Color32;
 use tracing::{Level, event};
 
 pub struct Gpu {
@@ -59,60 +58,5 @@ impl Gpu {
         } else {
             self.frame_is_ready = false;
         }
-    }
-
-    pub fn render_vram(&mut self, output_buffer: &mut [Color32; 524288]) {
-        for y in 0..512 {
-            for x in 0..1024 {
-                let vram_addr = 2 * (1024 * y + x);
-                let pixel =
-                    u16::from_le_bytes([self.gp0.vram[vram_addr], self.gp0.vram[vram_addr + 1]]);
-
-                // RGB555
-                let r = convert_5bit_to_8bit(pixel & 0x1F);
-                let g = convert_5bit_to_8bit((pixel >> 5) & 0x1F);
-                let b = convert_5bit_to_8bit((pixel >> 10) & 0x1F);
-
-                output_buffer[1024 * y + x] = Color32::from_rgb(r, g, b);
-            }
-        }
-    }
-}
-
-fn convert_5bit_to_8bit(color: u16) -> u8 {
-    match color {
-        0 => 0,
-        1 => 8,
-        2 => 16,
-        3 => 25,
-        4 => 33,
-        5 => 41,
-        6 => 49,
-        7 => 58,
-        8 => 66,
-        9 => 74,
-        10 => 82,
-        11 => 90,
-        12 => 99,
-        13 => 107,
-        14 => 115,
-        15 => 123,
-        16 => 132,
-        17 => 140,
-        18 => 148,
-        19 => 156,
-        20 => 165,
-        21 => 173,
-        22 => 181,
-        23 => 189,
-        24 => 197,
-        25 => 206,
-        26 => 214,
-        27 => 222,
-        28 => 230,
-        29 => 239,
-        30 => 247,
-        31 => 255,
-        _ => panic!("Impossible")
     }
 }

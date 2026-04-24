@@ -239,7 +239,7 @@ impl Cpu {
                 ExceptionType::AddressErrorLoad(self.registers.program_counter),
                 false,
             );
-            return
+            return;
         }
 
         let opcode = self
@@ -256,7 +256,7 @@ impl Cpu {
         };
 
         self.registers.process_loads();
-        
+
         // Let each instruction take two ticks
         // Perform before exception handler bc instruction was already executed
         self.bus.tick(2);

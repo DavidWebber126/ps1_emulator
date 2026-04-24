@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf, time::Instant};
 
 use crate::cpu::Cpu;
 use crate::tracing_setup;
-use eframe::egui::{self, Color32, Event, RichText};
+use eframe::egui::{self, Event, RichText};
 
 //use tracing::{Level, event};
 
@@ -28,11 +28,9 @@ pub struct MyApp {
     cpu: Cpu,
     cpu_rom_loaded: bool,
     paused: bool,
-    //reload_handle: Handle<Filtered<Filtered<Layer<..., ..., ..., ...>, ..., ...>, ..., ...>, ...>,
     tty_output: bool,
     game_select: GameSelect,
     screen_texture: egui::TextureHandle,
-    frame_buffer: [Color32; 524288],
     tracing_start_pc: Option<u32>,
     logging_enabled: bool,
     timing_baseline: Instant,
@@ -41,12 +39,16 @@ pub struct MyApp {
 }
 
 impl MyApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, folder: PathBuf, tty_output: bool, tracing_start_pc: Option<u32>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        folder: PathBuf,
+        tty_output: bool,
+        tracing_start_pc: Option<u32>,
+    ) -> Self {
         Self {
             cpu: Cpu::new(),
             cpu_rom_loaded: false,
             paused: false,
-            //reload_handle,
             tty_output,
             game_select: GameSelect::new(folder),
             screen_texture: cc.egui_ctx.load_texture(
@@ -54,7 +56,6 @@ impl MyApp {
                 egui::ColorImage::example(),
                 egui::TextureOptions::NEAREST,
             ),
-            frame_buffer: [Color32::WHITE; 524288],
             tracing_start_pc,
             logging_enabled: false,
             timing_baseline: Instant::now(),
@@ -69,12 +70,13 @@ impl eframe::App for MyApp {
         // Run CPU and associated steps
         if self.cpu_rom_loaded {
             while !self.paused && !self.cpu.bus.gpu.frame_is_ready {
-                if let Some(tracing_pc) = self.tracing_start_pc && !self.logging_enabled {
-                    if tracing_pc == self.cpu.registers.program_counter {
-                        println!("Begin logging...");
-                        self.logging_enabled = true;
-                        tracing_setup::init_tracing();
-                    }
+                if let Some(tracing_pc) = self.tracing_start_pc
+                    && !self.logging_enabled
+                    && tracing_pc == self.cpu.registers.program_counter
+                {
+                    println!("Begin logging...");
+                    self.logging_enabled = true;
+                    tracing_setup::init_tracing();
                 }
 
                 // if self.logging_enabled {
@@ -93,8 +95,12 @@ impl eframe::App for MyApp {
                             ..
                         } => std::process::exit(0),
                         Event::Key {
-                            key: egui::Key::P, ..
-                        } => self.paused = !self.paused,
+                            key: egui::Key::P, 
+                            pressed: true,
+                            ..
+                        } => {
+                            self.paused = !self.paused;
+                        }
                         _ => {}
                     }
                 }
@@ -106,26 +112,30 @@ impl eframe::App for MyApp {
                 // self.fps = frame_time;
                 self.frame_count = 1;
                 self.timing_baseline = Instant::now();
-            } else if self.frame_count == 30 {
-                let thirty_frame_time = self.timing_baseline.elapsed().as_secs_f32();
+            } else if self.frame_count == 5 {
+                let five_frame_time = self.timing_baseline.elapsed().as_secs_f32();
                 self.frame_count = 1;
                 self.timing_baseline = Instant::now();
-                self.fps = 30.0 / thirty_frame_time;
+                if !self.paused {
+                    self.fps = 5.0 / five_frame_time;
+                }
             }
 
             self.frame_count += 1;
 
-            self.cpu.bus.gpu.render_vram(&mut self.frame_buffer);
-
+            let pixel_bytes = bytemuck::cast_slice(&(*self.cpu.bus.gpu.gp0.vram));
             self.screen_texture.set(
+                /*
                 egui::ColorImage {
                     size: [1024, 512],
                     source_size: egui::Vec2 {
                         x: 1024.0,
                         y: 512.0,
                     },
-                    pixels: self.frame_buffer.to_vec(),
+                    pixels: &self.cpu.bus.gpu.gp0.vram[0..524288],
                 },
+                */
+                egui::ColorImage::from_rgba_unmultiplied([1024, 512], pixel_bytes),
                 egui::TextureOptions::NEAREST,
             );
 
@@ -135,7 +145,7 @@ impl eframe::App for MyApp {
                 egui::load::SizedTexture::new(self.screen_texture.id(), [1024.0, 512.0]);
 
             // Render current frame
-            
+
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.heading(RichText::new(format!("FPS is {}", self.fps)));
 
@@ -175,7 +185,7 @@ impl eframe::App for MyApp {
                     // Load exe
                     let exe = fs::read(game).unwrap();
                     println!("Exe size (including header): {:08X}", exe.len());
-                    //println!("At 0x00040CE8 is 0x{:02X}{:02X}{:02X}{:02X}", exe[])
+
                     // Runs CPU until exe can be loaded
                     self.cpu.sideload_exe(&exe, self.tty_output);
 

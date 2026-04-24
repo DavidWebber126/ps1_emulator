@@ -21,7 +21,10 @@ pub fn init_tracing() {
 
     // Layer to write to stdout
     let fmt_layer = layer()
-        .with_filter(filter::LevelFilter::INFO);
+        .with_filter(filter::LevelFilter::INFO)
+        .with_filter(filter::filter_fn(|metadata| {
+            (*metadata).target().contains("ps1_emulator")
+        }));
 
     tracing_subscriber::registry()
         .with(fmt_layer)

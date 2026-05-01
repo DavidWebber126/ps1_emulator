@@ -1,6 +1,13 @@
-use std::collections::VecDeque;
+use std::{cmp, mem};
 
 use tracing::{Level, event};
+
+const DITHER_TABLE: [[i8; 4]; 4] = [
+    [-4, 0, -3, 1],
+    [2, -2, 3, -1],
+    [-3, 1, -4, 0],
+    [3, -1, 2, -2],
+];
 
 #[repr(C)]
 #[derive(Default, Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -45,9 +52,24 @@ struct VramCopyFields {
 
 enum Gp0State {
     WaitingForCommand,
-    ReceivingParams { command: Commands, idx: u8 },
+    ReceivingParams {
+        command: Commands,
+        idx: u8,
+    },
     ReceivingData(VramCopyFields),
     SendingData(VramCopyFields),
+    ReceivingLineVert {
+        polyline: bool,
+        shaded: bool,
+        idx: u8,
+    },
+    ReceivingPolyVert {
+        size: u8,
+        shaded: bool,
+        textured: bool,
+        idx: u8,
+    },
+    //ReceivingPolyVertShaded { size: u8, shaded: bool, textured: bool, idx: u8 },
     //CpuBlitParams { idx: u8 },
     //ReceivingParams { command: 4, idx: u8 },
 }
@@ -56,11 +78,11 @@ pub struct Gp0 {
     state: Gp0State,
     pub vram: Box<[Color; 524288]>, // 1024 x 512 grid of pixels
     pub params: [u32; 16],
-    pub command_buffer: VecDeque<u32>, // Holds at most 16 words (i.e 16 u32s)
+    //pub command_buffer: VecDeque<u32>, // Holds at most 16 words (i.e 16 u32s)
     pub draw_mode: u32,
     pub texture_window: u32,
-    pub top_left_draw_area: (u16, u16),
-    pub bot_right_draw_area: (u16, u16),
+    pub draw_area_top_left: (u32, u32),
+    pub draw_area_bot_right: (u32, u32),
     pub draw_offset: (i16, i16),
     pub mask_bits: u8,
 }
@@ -71,11 +93,11 @@ impl Gp0 {
             state: Gp0State::WaitingForCommand,
             vram: Box::new([Color::from(0, 0, 0, 255); 524288]),
             params: [0; 16],
-            command_buffer: VecDeque::with_capacity(16),
+            //command_buffer: VecDeque::with_capacity(16),
             draw_mode: 0,
             texture_window: 0,
-            top_left_draw_area: (0, 0),
-            bot_right_draw_area: (0, 0),
+            draw_area_top_left: (0, 0),
+            draw_area_bot_right: (0, 0),
             draw_offset: (0, 0),
             mask_bits: 0,
         }
@@ -126,8 +148,53 @@ impl Gp0 {
         self.state = match self.state {
             Gp0State::WaitingForCommand => {
                 match val >> 29 {
-                    1 => todo!(), // polygon primitive
-                    2 => todo!(), // line primitive
+                    1 => {
+                        // Polygon Primitive
+                        self.params[0] = val;
+
+                        let shaded = (val >> 28) & 1 > 0;
+                        let textured = (val >> 24) & 1 > 0;
+                        let size = if (val >> 27) & 1 > 0 { 4 } else { 3 };
+
+                        if shaded {
+                            self.params[1] = val & 0xFFFFFF;
+                            Gp0State::ReceivingPolyVert {
+                                size,
+                                shaded,
+                                textured,
+                                idx: 2,
+                            }
+                        } else {
+                            Gp0State::ReceivingPolyVert {
+                                size,
+                                shaded,
+                                textured,
+                                idx: 1,
+                            }
+                        }
+                    }
+                    2 => {
+                        // Line Primitive
+                        self.params[0] = val;
+                        let polyline = (self.params[0] >> 27) & 0x1 > 0;
+
+                        if (val >> 28) & 0x1 > 0 {
+                            event!(target: "ps1_emulator::GPU", Level::TRACE, "GP0 Line (Gourand) Primitive command received");
+                            self.params[1] = val & 0xFFFFFF;
+                            Gp0State::ReceivingLineVert {
+                                polyline,
+                                shaded: true,
+                                idx: 2,
+                            }
+                        } else {
+                            event!(target: "ps1_emulator::GPU", Level::TRACE, "GP0 Line Primitive command received");
+                            Gp0State::ReceivingLineVert {
+                                polyline,
+                                shaded: false,
+                                idx: 1,
+                            }
+                        }
+                    }
                     3 => {
                         // rectangle primitive
                         // Store command in params as it will be needed later
@@ -204,15 +271,19 @@ impl Gp0 {
                             }
                             0xE3 => {
                                 // Set Drawing Area Top Left (X1, Y1)
-                                self.top_left_draw_area.0 = (val & 0x3FF) as u16;
-                                self.top_left_draw_area.1 = ((val >> 10) & 0x3FF) as u16;
+                                self.draw_area_top_left.0 = val & 0x3FF;
+                                self.draw_area_top_left.1 = (val >> 10) & 0x3FF;
+
+                                event!(target: "ps1_emulator::GPU", Level::TRACE, "Set Draw Area Top Left to {:?}", self.draw_area_top_left);
 
                                 Gp0State::WaitingForCommand
                             }
                             0xE4 => {
                                 // Set Drawing Area Bottom Right (X2, Y2)
-                                self.bot_right_draw_area.0 = (val & 0x3FF) as u16;
-                                self.bot_right_draw_area.1 = ((val >> 10) & 0x3FF) as u16;
+                                self.draw_area_bot_right.0 = val & 0x3FF;
+                                self.draw_area_bot_right.1 = (val >> 10) & 0x3FF;
+
+                                event!(target: "ps1_emulator::GPU", Level::TRACE, "Set Draw Area Bottom Right to {:?}", self.draw_area_bot_right);
 
                                 Gp0State::WaitingForCommand
                             }
@@ -249,9 +320,6 @@ impl Gp0 {
                     event!(target: "ps1_emulator::GPU", Level::TRACE, "All Params received for command");
                     // All parameters received. Diatch to execute the command now
                     match command {
-                        // 0 => todo!(), // misc commands
-                        // 1 => todo!(), // polygon primitive
-                        // 2 => todo!(), // line primitive
                         Commands::Rectangle => {
                             // rectangle primitive
                             let dimension = match (self.params[0] >> 27) & 0b11 {
@@ -302,6 +370,162 @@ impl Gp0 {
             Gp0State::SendingData(fields) => {
                 // GPU is busy sending data. Do not change state until final data has been sent via GPUREAD
                 Gp0State::SendingData(fields)
+            }
+            Gp0State::ReceivingPolyVert {
+                size,
+                shaded,
+                textured,
+                idx,
+            } => {
+                self.params[idx as usize] = val;
+
+                let limit = size * (1 + shaded as u8 + textured as u8);
+
+                if idx >= limit {
+                    let mut index = 1 + shaded as usize;
+                    let v0 = (
+                        self.params[index] & 0x3FF,
+                        (self.params[index] >> 16) & 0x1FF,
+                    );
+                    index += 1 + textured as usize + shaded as usize;
+                    let v1 = (
+                        self.params[index] & 0x3FF,
+                        (self.params[index] >> 16) & 0x1FF,
+                    );
+                    index += 1 + textured as usize + shaded as usize;
+                    let v2 = (
+                        self.params[index] & 0x3FF,
+                        (self.params[index] >> 16) & 0x1FF,
+                    );
+
+                    let (min, max) = self.get_bounds(v0, v1, v2);
+
+                    if !shaded && !textured {
+                        self.rasterize_triangle(v0, v1, v2, min, max);
+                    }
+
+                    if shaded && !textured {
+                        let c0 = self.params[1];
+                        let c1 = self.params[3];
+                        let c2 = self.params[5];
+
+                        self.rasterize_triangle_shaded(v0, v1, v2, c0, c1, c2, min, max);
+                    }
+
+                    if size == 4 {
+                        index += 1 + textured as usize + shaded as usize;
+                        let v3 = (
+                            self.params[index] & 0x3FF,
+                            (self.params[index] >> 16) & 0x1FF,
+                        );
+
+                        let (min, max) = self.get_bounds(v1, v2, v3);
+
+                        if !shaded && !textured {
+                            self.rasterize_triangle(v1, v2, v3, min, max);
+                        }
+
+                        if shaded && !textured {
+                            let c1 = self.params[3];
+                            let c2 = self.params[5];
+                            let c3 = self.params[7];
+
+                            self.rasterize_triangle_shaded(v1, v2, v3, c1, c2, c3, min, max);
+                        }
+                    }
+
+                    Gp0State::WaitingForCommand
+                } else {
+                    Gp0State::ReceivingPolyVert {
+                        size,
+                        shaded,
+                        textured,
+                        idx: idx + 1,
+                    }
+                }
+            }
+            Gp0State::ReceivingLineVert {
+                polyline,
+                shaded,
+                idx,
+            } => {
+                let poly_stop = val & 0xF000F000 == 0x50005000;
+
+                self.params[idx as usize] = val;
+
+                match (polyline, poly_stop) {
+                    (true, true) => {
+                        // Polyline stop signal received. Stop drawing lines
+                        Gp0State::WaitingForCommand
+                    }
+                    (true, false) => {
+                        // Polyline but no stop signal. Continue to draw
+                        if idx == 2 && !shaded {
+                            let x1 = self.params[1] & 0x3FF;
+                            let y1 = (self.params[1] >> 16) & 0x1FF;
+                            let x2 = self.params[2] & 0x3FF;
+                            let y2 = (self.params[2] >> 16) & 0x1FF;
+
+                            self.draw_line(x1, y1, x2, y2);
+                            self.params[1] = self.params[2];
+                            Gp0State::ReceivingLineVert {
+                                polyline,
+                                shaded,
+                                idx: 2,
+                            }
+                        } else if idx == 4 {
+                            let color1 = self.params[1];
+                            let x1 = self.params[2] & 0x3FF;
+                            let y1 = (self.params[2] >> 16) & 0x1FF;
+                            let color2 = self.params[3];
+                            let x2 = self.params[4] & 0x3FF;
+                            let y2 = (self.params[4] >> 16) & 0x1FF;
+
+                            self.draw_line_shaded(x1, y1, color1, x2, y2, color2);
+                            self.params[1] = self.params[3];
+                            self.params[2] = self.params[4];
+                            Gp0State::ReceivingLineVert {
+                                polyline,
+                                shaded,
+                                idx: 3,
+                            }
+                        } else {
+                            Gp0State::ReceivingLineVert {
+                                polyline,
+                                shaded,
+                                idx: idx + 1,
+                            }
+                        }
+                    }
+                    (false, _) => {
+                        // Single line. Draw one line then end
+                        if idx == 2 && !shaded {
+                            let x1 = self.params[1] & 0x3FF;
+                            let y1 = (self.params[1] >> 16) & 0x1FF;
+                            let x2 = self.params[2] & 0x3FF;
+                            let y2 = (self.params[2] >> 16) & 0x1FF;
+
+                            self.draw_line(x1, y1, x2, y2);
+                            Gp0State::WaitingForCommand
+                        } else if idx == 4 {
+                            let color1 = self.params[1];
+                            let x1 = self.params[2] & 0x3FF;
+                            let y1 = (self.params[2] >> 16) & 0x1FF;
+                            let color2 = self.params[3];
+                            let x2 = self.params[4] & 0x3FF;
+                            let y2 = (self.params[4] >> 16) & 0x1FF;
+
+                            self.draw_line_shaded(x1, y1, color1, x2, y2, color2);
+                            Gp0State::WaitingForCommand
+                        } else {
+                            Gp0State::ReceivingLineVert {
+                                polyline,
+                                shaded,
+                                idx: idx + 1,
+                            }
+                        }
+                    }
+                }
             }
         };
     }
@@ -450,6 +674,242 @@ impl Gp0 {
         }
     }
 
+    // returns (min_x, min_y) and (max_x, max_y) of bounding box
+    fn get_bounds(
+        &mut self,
+        v0: (u32, u32),
+        v1: (u32, u32),
+        v2: (u32, u32),
+    ) -> ((u32, u32), (u32, u32)) {
+        let min_x = cmp::max(
+            self.draw_area_top_left.0,
+            cmp::min(v0.0, cmp::min(v1.0, v2.0)),
+        );
+        let min_y = cmp::max(
+            self.draw_area_top_left.1,
+            cmp::min(v0.1, cmp::min(v1.1, v2.1)),
+        );
+        let max_x = cmp::min(
+            self.draw_area_bot_right.0,
+            cmp::max(v0.0, cmp::max(v1.0, v2.0)),
+        );
+        let max_y = cmp::min(
+            self.draw_area_bot_right.1,
+            cmp::max(v0.1, cmp::max(v1.1, v2.1)),
+        );
+
+        ((min_x, min_y), (max_x, max_y))
+    }
+
+    fn rasterize_triangle(
+        &mut self,
+        mut v0: (u32, u32),
+        mut v1: (u32, u32),
+        v2: (u32, u32),
+        min: (u32, u32),
+        max: (u32, u32),
+    ) {
+        if min.0 > max.0 || min.1 > max.1 {
+            return;
+        }
+
+        if cross_product(v0, v1, v2) < 0 {
+            mem::swap(&mut v0, &mut v1);
+        }
+
+        let command = self.params[0];
+
+        let r = (command & 0xFF) >> 3;
+        let g = ((command >> 8) & 0xFF) >> 3;
+        let b = ((command >> 16) & 0xFF) >> 3;
+
+        let pixel = (r | (g << 5) | (b << 10)) as u16;
+
+        let use_alpha = (self.params[0] >> 25) & 0x1 > 0;
+
+        for y in min.1..=max.1 {
+            for x in min.0..=max.0 {
+                if inside_triange((x, y), v0, v1, v2).is_some() {
+                    let vram_addr = 1024 * (y as usize) + x as usize;
+                    if use_alpha {
+                        self.write_vram_alpha(vram_addr, pixel);
+                    } else {
+                        self.write_vram(vram_addr, pixel);
+                    }
+                }
+            }
+        }
+    }
+
+    fn rasterize_triangle_shaded(
+        &mut self,
+        mut v0: (u32, u32),
+        mut v1: (u32, u32),
+        v2: (u32, u32),
+        mut c0: u32,
+        mut c1: u32,
+        c2: u32,
+        min: (u32, u32),
+        max: (u32, u32),
+    ) {
+        if min.0 > max.0 || min.1 > max.1 {
+            return;
+        }
+
+        if cross_product(v0, v1, v2) < 0 {
+            mem::swap(&mut v0, &mut v1);
+            mem::swap(&mut c0, &mut c1);
+        }
+
+        let r0 = c0 & 0xFF;
+        let g0 = (c0 >> 8) & 0xFF;
+        let b0 = (c0 >> 16) & 0xFF;
+        let r1 = c1 & 0xFF;
+        let g1 = (c1 >> 8) & 0xFF;
+        let b1 = (c1 >> 16) & 0xFF;
+        let r2 = c2 & 0xFF;
+        let g2 = (c2 >> 8) & 0xFF;
+        let b2 = (c2 >> 16) & 0xFF;
+
+        let use_alpha = (self.params[0] >> 25) & 0x1 > 0;
+
+        for y in min.1..=max.1 {
+            for x in min.0..=max.0 {
+                if let Some([a, b, c]) = inside_triange((x, y), v0, v1, v2) {
+                    let r = (a * r0 as f32 + b * r1 as f32 + c * r2 as f32).round() as u8;
+                    let g = (a * g0 as f32 + b * g1 as f32 + c * g2 as f32).round() as u8;
+                    let b = (a * b0 as f32 + b * b1 as f32 + c * b2 as f32).round() as u8;
+                    let (r, g, b) = if (self.draw_mode >> 9) & 1 > 0 {
+                        dither((r, g, b), (x, y))
+                    } else {
+                        (r, g, b)
+                    };
+                    let r = (r >> 3) as u16;
+                    let g = (g >> 3) as u16;
+                    let b = (b >> 3) as u16;
+                    let pixel = r | (g << 5) | (b << 10);
+                    let vram_addr = 1024 * (y as usize) + x as usize;
+                    if use_alpha {
+                        self.write_vram_alpha(vram_addr, pixel);
+                    } else {
+                        self.write_vram(vram_addr, pixel);
+                    }
+                }
+            }
+        }
+    }
+
+    fn draw_line(&mut self, x1: u32, y1: u32, x2: u32, y2: u32) {
+        let command = self.params[0];
+
+        let r = (command & 0xFF) >> 3;
+        let g = ((command >> 8) & 0xFF) >> 3;
+        let b = ((command >> 16) & 0xFF) >> 3;
+
+        let pixel = (r | (g << 5) | (b << 10)) as u16;
+
+        let use_alpha = command & 0x2000000 > 0;
+
+        if x1.abs_diff(x2) >= y1.abs_diff(y2) {
+            let slope = (y2 as f32 - y1 as f32) / (x2 as f32 - x1 as f32);
+            let range = if x1 <= x2 { x1..=x2 } else { x2..=x1 };
+            for x in range {
+                let y = (slope * (x as f32 - x1 as f32) + y1 as f32).floor();
+                if (0.0..=512.0).contains(&y) {
+                    let vram_addr = 1024 * (y as usize) + x as usize;
+                    if use_alpha {
+                        self.write_vram_alpha(vram_addr, pixel);
+                    } else {
+                        self.write_vram(vram_addr, pixel);
+                    }
+                }
+            }
+        } else {
+            let slope = (x2 as f32 - x1 as f32) / (y2 as f32 - y1 as f32);
+            let range = if y1 <= y2 { y1..=y2 } else { y2..=y1 };
+            for y in range {
+                let x = (slope * (y as f32 - y1 as f32) + x1 as f32).floor();
+                if (0.0..=1024.0).contains(&x) {
+                    let vram_addr = 1024 * (y as usize) + x as usize;
+                    if use_alpha {
+                        self.write_vram_alpha(vram_addr, pixel);
+                    } else {
+                        self.write_vram(vram_addr, pixel);
+                    }
+                }
+            }
+        };
+    }
+
+    fn draw_line_shaded(&mut self, x1: u32, y1: u32, c1: u32, x2: u32, y2: u32, c2: u32) {
+        let command = self.params[0];
+
+        let r1 = c1 & 0xFF;
+        let g1 = (c1 >> 8) & 0xFF;
+        let b1 = (c1 >> 16) & 0xFF;
+        let r2 = c2 & 0xFF;
+        let g2 = (c2 >> 8) & 0xFF;
+        let b2 = (c2 >> 16) & 0xFF;
+
+        let use_alpha = command & 0x2000000 > 0;
+
+        let total_dist =
+            f32::sqrt((x1 as f32 - x2 as f32).powi(2) + (y1 as f32 - y2 as f32).powi(2));
+        if x1.abs_diff(x2) >= y1.abs_diff(y2) {
+            let slope = (y2 as f32 - y1 as f32) / (x2 as f32 - x1 as f32);
+            let range = if x1 <= x2 { x1..=x2 } else { x2..=x1 };
+            for x in range {
+                let y_raw = slope * (x as f32 - x1 as f32) + y1 as f32;
+                let y = y_raw.floor();
+                let dist = f32::sqrt((x as f32 - x2 as f32).powi(2) + (y_raw - y2 as f32).powi(2));
+                let pct = dist / total_dist;
+
+                let r = (pct * (r1 as f32) + (1.0 - pct) * (r2 as f32)).round() as u16;
+                let g = (pct * (g1 as f32) + (1.0 - pct) * (g2 as f32)).round() as u16;
+                let b = (pct * (b1 as f32) + (1.0 - pct) * (b2 as f32)).round() as u16;
+                let r = (r & 0xFF) >> 3;
+                let g = (g & 0xFF) >> 3;
+                let b = (b & 0xFF) >> 3;
+                let pixel = r | (g << 5) | (b << 10);
+
+                if (0.0..=512.0).contains(&y) {
+                    let vram_addr = 1024 * (y as usize) + x as usize;
+                    if use_alpha {
+                        self.write_vram_alpha(vram_addr, pixel);
+                    } else {
+                        self.write_vram(vram_addr, pixel);
+                    }
+                }
+            }
+        } else {
+            let slope = (x2 as f32 - x1 as f32) / (y2 as f32 - y1 as f32);
+            let range = if y1 <= y2 { y1..=y2 } else { y2..=y1 };
+            for y in range {
+                let x_raw = slope * (y as f32 - y1 as f32) + x1 as f32;
+                let x = x_raw.floor();
+                let dist = f32::sqrt((x_raw - x2 as f32).powi(2) + (y as f32 - y2 as f32).powi(2));
+                let pct = dist / total_dist;
+
+                let r = (pct * (r1 as f32) + (1.0 - pct) * (r2 as f32)).round() as u16;
+                let g = (pct * (g1 as f32) + (1.0 - pct) * (g2 as f32)).round() as u16;
+                let b = (pct * (b1 as f32) + (1.0 - pct) * (b2 as f32)).round() as u16;
+                let r = (r & 0xFF) >> 3;
+                let g = (g & 0xFF) >> 3;
+                let b = (b & 0xFF) >> 3;
+                let pixel = r | (g << 5) | (b << 10);
+
+                if (0.0..1024.0).contains(&x) {
+                    let vram_addr = 1024 * (y as usize) + x as usize;
+                    if use_alpha {
+                        self.write_vram_alpha(vram_addr, pixel);
+                    } else {
+                        self.write_vram(vram_addr, pixel);
+                    }
+                }
+            }
+        };
+    }
+
     fn draw_untextured_rectangle(&mut self, width: u32, height: u32) {
         let command = self.params[0];
 
@@ -466,13 +926,17 @@ impl Gp0 {
 
         for y in 0..height {
             for x in 0..width {
-                let vram_row = ((vram_y + y) & 0x1FF) as usize;
-                let vram_col = ((vram_x + x) & 0x3FF) as usize;
-                let vram_addr = 1024 * vram_row + vram_col;
-                if use_alpha {
-                    self.write_vram_alpha(vram_addr, pixel);
-                } else {
-                    self.write_vram(vram_addr, pixel);
+                let vram_row = (vram_y + y) & 0x1FF;
+                let vram_col = (vram_x + x) & 0x3FF;
+                if (self.draw_area_top_left.0..self.draw_area_bot_right.0).contains(&vram_col)
+                    && (self.draw_area_top_left.1..self.draw_area_bot_right.1).contains(&vram_row)
+                {
+                    let vram_addr = 1024 * vram_row as usize + vram_col as usize;
+                    if use_alpha {
+                        self.write_vram_alpha(vram_addr, pixel);
+                    } else {
+                        self.write_vram(vram_addr, pixel);
+                    }
                 }
             }
         }
@@ -504,6 +968,58 @@ impl Gp0 {
     pub fn is_sending_data(&self) -> bool {
         matches!(self.state, Gp0State::SendingData(_))
     }
+}
+
+// Cross product of (v1 - v0) and (v2 - v0)
+fn cross_product(v0: (u32, u32), v1: (u32, u32), v2: (u32, u32)) -> i32 {
+    (v1.0 as i32 - v0.0 as i32) * (v2.1 as i32 - v0.1 as i32)
+        - (v1.1 as i32 - v0.1 as i32) * (v2.0 as i32 - v0.0 as i32)
+}
+
+fn inside_triange(
+    p: (u32, u32),
+    v0: (u32, u32),
+    v1: (u32, u32),
+    v2: (u32, u32),
+) -> Option<[f32; 3]> {
+    let mut barycentric_coords = [0.0; 3];
+
+    let denominator = cross_product(v0, v1, v2) as f32;
+    if denominator == 0.0 {
+        return Some([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0]);
+    }
+
+    for (i, (a, b)) in [(v1, v2), (v2, v0), (v0, v1)].iter().enumerate() {
+        let cross_product = cross_product(*a, *b, p);
+        barycentric_coords[i] = (cross_product as f32) / denominator;
+
+        if cross_product < 0 {
+            return None;
+        }
+
+        if cross_product == 0 {
+            if b.1 > a.1 {
+                return None;
+            }
+
+            if b.1 == a.1 && b.0 < a.0 {
+                return None;
+            }
+        }
+    }
+
+    Some(barycentric_coords)
+}
+
+// Color is in rgb
+fn dither(color: (u8, u8, u8), pixel: (u32, u32)) -> (u8, u8, u8) {
+    let offset = DITHER_TABLE[(pixel.0 & 0b11) as usize][(pixel.1 & 0b11) as usize];
+
+    (
+        color.0.saturating_add_signed(offset),
+        color.1.saturating_add_signed(offset),
+        color.2.saturating_add_signed(offset),
+    )
 }
 
 fn convert_5bit_to_8bit(color: u16) -> u8 {

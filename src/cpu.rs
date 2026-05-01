@@ -1022,12 +1022,12 @@ impl Cpu {
                 let dividend = self.registers.read(rs);
                 let divisor = self.registers.read(rt);
 
-                if divisor == 0 {
+                if let Some(result) = dividend.checked_div(divisor) {
+                    self.registers.lo = result;
+                    self.registers.hi = dividend % divisor;
+                } else {
                     self.registers.hi = dividend;
                     self.registers.lo = 0xFFFFFFFF;
-                } else {
-                    self.registers.lo = dividend / divisor;
-                    self.registers.hi = dividend % divisor;
                 }
 
                 Ok(())

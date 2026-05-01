@@ -17,6 +17,7 @@ impl GameSelect {
         for filepath in folder.read_dir().unwrap().flatten() {
             filepaths.push(filepath.path());
         }
+        filepaths.sort();
         Self {
             filepaths,
             selected_game: None,

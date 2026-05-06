@@ -103,7 +103,7 @@ impl Gp0 {
         }
     }
 
-    fn write_vram(&mut self, addr: usize, val: u16) {
+    pub fn write_vram(&mut self, addr: usize, val: u16) {
         // RGB555
         let r = convert_5bit_to_8bit(val & 0x1F);
         let g = convert_5bit_to_8bit((val >> 5) & 0x1F);
@@ -126,7 +126,7 @@ impl Gp0 {
         self.vram[addr] = Color::from(new_r, new_g, new_b, 255);
     }
 
-    fn read_vram(&self, addr: usize) -> u16 {
+    pub fn read_vram(&self, addr: usize) -> u16 {
         let (r, g, b, _) = self.vram[addr].to_tuple();
 
         let r = convert_8bit_to_5bit(r);
@@ -245,7 +245,11 @@ impl Gp0 {
                     0 | 7 => {
                         match val >> 24 {
                             0x00 => Gp0State::WaitingForCommand, // no op
-                            0x01 => todo!(),
+                            0x01 => {
+                                // Flush Texture Cache
+                                // TODO
+                                Gp0State::WaitingForCommand
+                            }
                             0x02 => {
                                 // VRAM Fill
                                 event!(target: "ps1_emulator::GPU", Level::TRACE, "VRAM Fill Received");

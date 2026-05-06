@@ -1,5 +1,6 @@
 use crate::cop0::Cop0;
 use crate::cpu::ExceptionType;
+use crate::dma::{Dma, SyncMode};
 use crate::gpu::Gpu;
 use crate::interrupts::Interrupt;
 use crate::timer::Timer;
@@ -18,6 +19,10 @@ pub struct Bus {
     pub timer1: Timer,
     pub timer2: Timer,
     pub gpu: Gpu,
+    pub dma2: Dma,
+    pub dma6: Dma,
+    pub dpcr: u32,
+    pub dicr: u32,
 }
 
 impl Bus {
@@ -34,6 +39,10 @@ impl Bus {
             timer1: Timer::new(),
             timer2: Timer::new(),
             gpu: Gpu::new(),
+            dma2: Dma::new(),
+            dma6: Dma::new(),
+            dpcr: 0x07654321,
+            dicr: 0,
         }
     }
 
@@ -249,6 +258,8 @@ impl Bus {
             0x1F80112A => Ok(0),
             0x1F80112B => Ok(0),
             // SPU Control Registers
+            // Voice Registers
+            0x1F801C00..=0x1F801D7F => Ok(0),
             // Main Volume
             0x1F801D80 => Ok(0),
             0x1F801D81 => Ok(0),
@@ -259,6 +270,25 @@ impl Bus {
             0x1F801D85 => Ok(0),
             0x1F801D86 => Ok(0),
             0x1F801D87 => Ok(0),
+            // Voice 0..23 Key ON
+            0x1F801D88 => Ok(0),
+            0x1F801D89 => Ok(0),
+            0x1F801D8A => Ok(0),
+            0x1F801D8B => Ok(0),
+            // Voice 0..23 Key OFF
+            0x1F801D8C => Ok(0),
+            0x1F801D8D => Ok(0),
+            0x1F801D8E => Ok(0),
+            0x1F801D8F => Ok(0),
+            // SPU Control Register (SPUCNT)
+            0x1F801DAA => Ok(0),
+            0x1F801DAB => Ok(0),
+            // Sound RAM Data Transfer Control
+            0x1F801DAC => Ok(0),
+            0x1F801DAD => Ok(0),
+            // SPU Status Register (SPUSTAT)
+            0x1F801DAE => Ok(0),
+            0x1F801DAF => Ok(0),
             // Expansion Region 2 Int/Dip/Post
             0x1F802041 => Ok(0),
             // CPU Control Register
@@ -585,6 +615,8 @@ impl Bus {
             0x1F80112A => Ok(()),
             0x1F80112B => Ok(()),
             // SPU Control Registers
+            // Voice Registers
+            0x1F801C00..=0x1F801D7F => Ok(()),
             // Main Volume
             0x1F801D80 => Ok(()),
             0x1F801D81 => Ok(()),
@@ -595,6 +627,61 @@ impl Bus {
             0x1F801D85 => Ok(()),
             0x1F801D86 => Ok(()),
             0x1F801D87 => Ok(()),
+            // Voice 0..23 Key ON
+            0x1F801D88 => Ok(()),
+            0x1F801D89 => Ok(()),
+            0x1F801D8A => Ok(()),
+            0x1F801D8B => Ok(()),
+            // Voice 0..23 Key OFF
+            0x1F801D8C => Ok(()),
+            0x1F801D8D => Ok(()),
+            0x1F801D8E => Ok(()),
+            0x1F801D8F => Ok(()),
+            // Voice 0..23 Channel FM
+            0x1F801D90 => Ok(()),
+            0x1F801D91 => Ok(()),
+            0x1F801D92 => Ok(()),
+            0x1F801D93 => Ok(()),
+            // Voice 0..23 Channel Noise Mode
+            0x1F801D94 => Ok(()),
+            0x1F801D95 => Ok(()),
+            0x1F801D96 => Ok(()),
+            0x1F801D97 => Ok(()),
+            // Voice 0..23 Channel Reverb Mode
+            0x1F801D98 => Ok(()),
+            0x1F801D99 => Ok(()),
+            0x1F801D9A => Ok(()),
+            0x1F801D9B => Ok(()),
+            // Sound RAM Reverb Work Area
+            0x1F801DA2 => Ok(()),
+            0x1F801DA3 => Ok(()),
+            // Sound RAM Data Transfer Address
+            0x1F801DA6 => Ok(()),
+            0x1F801DA7 => Ok(()),
+            // Sound RAM Data Transfer FIFO
+            0x1F801DA8 => Ok(()),
+            0x1F801DA9 => Ok(()),
+            // SPU Control Register (SPUCNT)
+            0x1F801DAA => Ok(()),
+            0x1F801DAB => Ok(()),
+            // Sound RAM Data Transfer Control
+            0x1F801DAC => Ok(()),
+            0x1F801DAD => Ok(()),
+            // SPU Status Register (SPUSTAT)
+            0x1F801DAE => Ok(()),
+            0x1F801DAF => Ok(()),
+            // CD Volume Left/Right
+            0x1F801DB0 => Ok(()),
+            0x1F801DB1 => Ok(()),
+            0x1F801DB2 => Ok(()),
+            0x1F801DB3 => Ok(()),
+            // External Volume Left/Right
+            0x1F801DB4 => Ok(()),
+            0x1F801DB5 => Ok(()),
+            0x1F801DB6 => Ok(()),
+            0x1F801DB7 => Ok(()),
+            0x1F801DC0..=0x1F801DFF => Ok(()),
+
             // Expansion Region 2 Int/Dip/Post
             0x1F802041 => Ok(()),
             // CPU Control Register
@@ -622,6 +709,26 @@ impl Bus {
         }
 
         match addr {
+            // DMA 2 - GPU
+            0x1F8010A0 => Ok(self.dma2.madr_read()),
+            0x1F8010A4 => Ok(self.dma2.block_control_read()),
+            0x1F8010A8 => Ok(self.dma2.channel_control_read()),
+            // DMA 6 - OTC
+            0x1F8010E0 => Ok(self.dma6.madr_read()),
+            0x1F8010E4 => Ok(self.dma6.block_control_read()),
+            0x1F8010E8 => Ok(self.dma6.channel_control_read()),
+            // DPCR
+            0x1F8010F0 => {
+                event!(target: "ps1_emulator::BUS", Level::WARN, "DPCR DMA Unimplemented");
+                Ok(self.dpcr)
+            }
+            // DICR
+            0x1F8010F4 => {
+                event!(target: "ps1_emulator::BUS", Level::WARN, "DICR DMA Unimplemented");
+                Ok(self.dicr)
+            }
+            //
+            // GPU
             0x1F801810 => Ok(self.gpu.gpuread()),
             0x1F801814 => Ok(self.gpu.gpustat()),
             _ => {
@@ -645,6 +752,135 @@ impl Bus {
         }
 
         match addr {
+            // DMA 2 - GPU
+            0x1F8010A0 => {
+                event!(target: "ps1_emulator::BUS", Level::WARN, "DMA 2 MADR write {:08X}", val);
+                self.dma2.madr_write(val);
+                Ok(())
+            }
+            0x1F8010A4 => {
+                event!(target: "ps1_emulator::BUS", Level::WARN, "DMA 2 BCH write {:08X}", val);
+                self.dma2.block_control_write(val);
+                Ok(())
+            }
+            0x1F8010A8 => {
+                event!(target: "ps1_emulator::BUS", Level::WARN, "DMA 2 CHCR write {:08X}", val);
+                if self.dma2.channel_control_write(val) {
+                    println!("Here dma2");
+                    let mut address = self.dma2.madr_read();
+                    self.dma2.start_dma();
+                    match self.dma2.sync_mode {
+                        SyncMode::Burst => {
+                            panic!("Sync Mode Burst not implemented")
+                        }
+                        SyncMode::Slice => {
+                            let block_ctrl = self.dma2.block_control_read();
+                            let block_size = block_ctrl & 0xFFFF;
+                            let num_blocks = (block_ctrl >> 16) & 0xFFFF;
+                            let dma_len = block_size * num_blocks;
+
+                            println!("DMA Len is {dma_len}");
+
+                            for _ in 0..dma_len {
+                                if self.dma2.dma_direction() {
+                                    self.gpu.gp0.write(address);
+                                }
+
+                                if self.dma2.increment_direction() {
+                                    address -= 4;
+                                } else {
+                                    address += 4;
+                                }
+                            }
+
+                            self.dma2.block_control_write(0);
+                        }
+                        SyncMode::LinkedList => {
+                            loop {
+                                let header = self.mem_read_word(address).unwrap();
+
+                                let data_words = header >> 24;
+
+                                for i in 0..data_words {
+                                    let addr = address + 4 * (i + 1);
+                                    let data = self.mem_read_word(addr).unwrap();
+                                    self.gpu.gp0.write(data);
+                                }
+
+                                let next_address = header & 0xFFFFFF;
+
+                                if next_address & 0x800000 > 0 {
+                                    break;
+                                }
+
+                                address = next_address;
+                            }
+                            self.dma2.madr_write(address);
+                        }
+                    }
+                    self.dma2.finish_dma();
+                }
+
+                Ok(())
+            }
+            // DMA 6 - OTC
+            0x1F8010E0 => {
+                event!(target: "ps1_emulator::BUS", Level::WARN, "DMA 6 MADR write {:08X}", val);
+                self.dma6.madr_write(val);
+                Ok(())
+            }
+            0x1F8010E4 => {
+                event!(target: "ps1_emulator::BUS", Level::WARN, "DMA 6 BCR write {:08X}", val);
+                self.dma6.block_control_write(val);
+                Ok(())
+            }
+            0x1F8010E8 => {
+                event!(target: "ps1_emulator::BUS", Level::WARN, "DMA 6 CHCR write {:08X}", val);
+                if self.dma6.channel_control_write(val) {
+                    println!("Here dma6");
+                    self.dma6.start_dma();
+                    let mut address = self.dma6.madr_read();
+                    match self.dma6.sync_mode {
+                        SyncMode::Burst => {
+                            let dma_len = self.dma6.block_control_read();
+                            for i in 0..dma_len {
+                                let header = if i == dma_len - 1 {
+                                    0xFFFFFF
+                                } else {
+                                    address - 4
+                                };
+
+                                self.mem_write_word(address, header).unwrap();
+                                address -= 4;
+                            }
+                        }
+                        SyncMode::Slice => {
+                            todo!("Slice mode not implemented")
+                        }
+                        SyncMode::LinkedList => {
+                            panic!("LinkedList shouldn't happen for DMA 6");
+                        }
+                    }
+
+                    self.dma6.finish_dma();
+                }
+
+                Ok(())
+            }
+            // DPCR - DMA Control Register
+            0x1F8010F0 => {
+                event!(target: "ps1_emulator::BUS", Level::WARN, "DPCR DMA Write {:08X}", val);
+                self.dma2.enabled = val & 0x800 > 0;
+                self.dma6.enabled = val & 0x8000000 > 0;
+                self.dpcr = val;
+                Ok(())
+            }
+            // DICR - DMA Interrupt Register
+            0x1F8010F4 => {
+                event!(target: "ps1_emulator::BUS", Level::WARN, "DICR DMA Unimplemented {:08X}", val);
+                self.dicr = val;
+                Ok(())
+            }
             0x1F801810 => {
                 self.gpu.gp0.write(val);
                 Ok(())

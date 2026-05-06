@@ -1,6 +1,7 @@
 mod bus;
 mod cop0;
 mod cpu;
+mod dma;
 mod frontend;
 mod gpu;
 mod interrupts;
@@ -27,7 +28,7 @@ fn main() {
                 cc,
                 folder,
                 true,
-                Some(0x80010000 /*0x80015880*/),
+                Some(/*0x800507B8 */ 0x80030000),
             )))
         }),
     );

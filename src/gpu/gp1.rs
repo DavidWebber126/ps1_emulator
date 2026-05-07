@@ -32,7 +32,7 @@ impl Gp1 {
     pub fn write(&mut self, val: u32) {
         let span = span!(target: "ps1_emulator::GPU", Level::DEBUG, "GP1", cmd=val);
         let _ = span.enter();
-        event!(target: "ps1_emulator::GPU", Level::DEBUG, "Write to GP1 with {:08X}", val);
+        event!(target: "ps1_emulator::GPU", Level::DEBUG, "Write to GP1: {:08X}", val);
 
         match val >> 24 {
             0x00 => {

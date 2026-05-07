@@ -28,6 +28,13 @@ impl Color {
     }
 }
 
+impl From<u32> for Color {
+    fn from(value: u32) -> Self {
+        let [_, b, g, r] = value.to_le_bytes();
+        Color { r, g, b, a: 255 }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Commands {
     Rectangle,
@@ -103,7 +110,16 @@ impl Gp0 {
         }
     }
 
-    pub fn write_vram(&mut self, addr: usize, val: u16) {
+    pub fn _write_vram(&mut self, addr: usize, val: u16) {
+        // RGB555
+        let r = val & 0x1F;
+        let g = (val >> 5) & 0x1F;
+        let b = (val >> 10) & 0x1F;
+
+        self.vram[addr] = Color::from(r as u8, g as u8, b as u8, 255);
+    }
+
+    fn write_5bit_color(&mut self, addr: usize, val: u16) {
         // RGB555
         let r = convert_5bit_to_8bit(val & 0x1F);
         let g = convert_5bit_to_8bit((val >> 5) & 0x1F);
@@ -112,7 +128,7 @@ impl Gp0 {
         self.vram[addr] = Color::from(r, g, b, 255);
     }
 
-    fn write_vram_alpha(&mut self, addr: usize, val: u16) {
+    fn write_5bit_color_alpha(&mut self, addr: usize, val: u16) {
         let r = convert_5bit_to_8bit(val & 0x1F);
         let g = convert_5bit_to_8bit((val >> 5) & 0x1F);
         let b = convert_5bit_to_8bit((val >> 10) & 0x1F);
@@ -129,11 +145,7 @@ impl Gp0 {
     pub fn read_vram(&self, addr: usize) -> u16 {
         let (r, g, b, _) = self.vram[addr].to_tuple();
 
-        let r = convert_8bit_to_5bit(r);
-        let g = convert_8bit_to_5bit(g);
-        let b = convert_8bit_to_5bit(b);
-
-        r | (g << 5) | (b << 10)
+        r as u16 | (g as u16) << 5 | (b as u16) << 10
     }
 
     fn copy_vram(&mut self, source_addr: usize, dest_addr: usize) {
@@ -143,17 +155,19 @@ impl Gp0 {
     pub fn write(&mut self, val: u32) {
         // let span = span!(target: "ps1_emulator::GPU", Level::DEBUG, "GP0");
         // let _ = span.enter();
-        event!(target: "ps1_emulator::GPU", Level::DEBUG, "Write to GP0 with {:08X}", val);
+        event!(target: "ps1_emulator::GPU", Level::DEBUG, "Write to GP0: {:08X}", val);
 
         self.state = match self.state {
             Gp0State::WaitingForCommand => {
                 match val >> 29 {
                     1 => {
                         // Polygon Primitive
+                        event!(target: "ps1_emulator::GPU", Level::TRACE, "GP0 Polygon command received");
+
                         self.params[0] = val;
 
                         let shaded = (val >> 28) & 1 > 0;
-                        let textured = (val >> 24) & 1 > 0;
+                        let textured = (val >> 26) & 1 > 0;
                         let size = if (val >> 27) & 1 > 0 { 4 } else { 3 };
 
                         if shaded {
@@ -404,7 +418,7 @@ impl Gp0 {
 
                     let (min, max) = self.get_bounds(v0, v1, v2);
 
-                    if !shaded && !textured {
+                    if !shaded {
                         self.rasterize_triangle(v0, v1, v2, min, max);
                     }
 
@@ -425,7 +439,7 @@ impl Gp0 {
 
                         let (min, max) = self.get_bounds(v1, v2, v3);
 
-                        if !shaded && !textured {
+                        if !shaded {
                             self.rasterize_triangle(v1, v2, v3, min, max);
                         }
 
@@ -577,7 +591,7 @@ impl Gp0 {
             let vram_col = ((fields.vram_x + fields.current_col) & 0x3FF) as usize;
 
             let vram_addr = 1024 * vram_row + vram_col;
-            self.write_vram(vram_addr, halfword);
+            self.write_5bit_color(vram_addr, halfword);
 
             fields.current_col += 1;
             if fields.current_col == fields.width {
@@ -736,13 +750,15 @@ impl Gp0 {
                 if inside_triange((x, y), v0, v1, v2).is_some() {
                     let vram_addr = 1024 * (y as usize) + x as usize;
                     if use_alpha {
-                        self.write_vram_alpha(vram_addr, pixel);
+                        self.write_5bit_color_alpha(vram_addr, pixel);
                     } else {
-                        self.write_vram(vram_addr, pixel);
+                        self.write_5bit_color(vram_addr, pixel);
                     }
                 }
             }
         }
+
+        event!(target: "ps1_emulator::GPU", Level::TRACE, "Rasterized Triangle");
     }
 
     fn rasterize_triangle_shaded(
@@ -794,9 +810,9 @@ impl Gp0 {
                     let pixel = r | (g << 5) | (b << 10);
                     let vram_addr = 1024 * (y as usize) + x as usize;
                     if use_alpha {
-                        self.write_vram_alpha(vram_addr, pixel);
+                        self.write_5bit_color_alpha(vram_addr, pixel);
                     } else {
-                        self.write_vram(vram_addr, pixel);
+                        self.write_5bit_color(vram_addr, pixel);
                     }
                 }
             }
@@ -822,9 +838,9 @@ impl Gp0 {
                 if (0.0..=512.0).contains(&y) {
                     let vram_addr = 1024 * (y as usize) + x as usize;
                     if use_alpha {
-                        self.write_vram_alpha(vram_addr, pixel);
+                        self.write_5bit_color_alpha(vram_addr, pixel);
                     } else {
-                        self.write_vram(vram_addr, pixel);
+                        self.write_5bit_color(vram_addr, pixel);
                     }
                 }
             }
@@ -836,9 +852,9 @@ impl Gp0 {
                 if (0.0..=1024.0).contains(&x) {
                     let vram_addr = 1024 * (y as usize) + x as usize;
                     if use_alpha {
-                        self.write_vram_alpha(vram_addr, pixel);
+                        self.write_5bit_color_alpha(vram_addr, pixel);
                     } else {
-                        self.write_vram(vram_addr, pixel);
+                        self.write_5bit_color(vram_addr, pixel);
                     }
                 }
             }
@@ -879,9 +895,9 @@ impl Gp0 {
                 if (0.0..=512.0).contains(&y) {
                     let vram_addr = 1024 * (y as usize) + x as usize;
                     if use_alpha {
-                        self.write_vram_alpha(vram_addr, pixel);
+                        self.write_5bit_color_alpha(vram_addr, pixel);
                     } else {
-                        self.write_vram(vram_addr, pixel);
+                        self.write_5bit_color(vram_addr, pixel);
                     }
                 }
             }
@@ -905,9 +921,9 @@ impl Gp0 {
                 if (0.0..1024.0).contains(&x) {
                     let vram_addr = 1024 * (y as usize) + x as usize;
                     if use_alpha {
-                        self.write_vram_alpha(vram_addr, pixel);
+                        self.write_5bit_color_alpha(vram_addr, pixel);
                     } else {
-                        self.write_vram(vram_addr, pixel);
+                        self.write_5bit_color(vram_addr, pixel);
                     }
                 }
             }
@@ -937,9 +953,9 @@ impl Gp0 {
                 {
                     let vram_addr = 1024 * vram_row as usize + vram_col as usize;
                     if use_alpha {
-                        self.write_vram_alpha(vram_addr, pixel);
+                        self.write_5bit_color_alpha(vram_addr, pixel);
                     } else {
-                        self.write_vram(vram_addr, pixel);
+                        self.write_5bit_color(vram_addr, pixel);
                     }
                 }
             }
@@ -964,7 +980,7 @@ impl Gp0 {
                 let vram_row = ((vram_y + y) & 0x1FF) as usize;
                 let vram_col = ((vram_x + x) & 0x3FF) as usize;
                 let vram_addr = 1024 * vram_row + vram_col;
-                self.write_vram(vram_addr, pixel);
+                self.write_5bit_color(vram_addr, pixel);
             }
         }
     }
@@ -1064,7 +1080,7 @@ fn convert_5bit_to_8bit(color: u16) -> u8 {
     }
 }
 
-fn convert_8bit_to_5bit(color: u8) -> u16 {
+fn _convert_8bit_to_5bit(color: u8) -> u16 {
     match color {
         0 => 0,
         8 => 1,

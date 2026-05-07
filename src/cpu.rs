@@ -450,7 +450,7 @@ impl Cpu {
 
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("JAL {:08X}", calc_target), self.registers);
 
-                self.registers.registers[31] = self.registers.program_counter + 8;
+                self.registers.write(31, self.registers.program_counter + 8);
                 self.registers.delayed_branch = Some(calc_target);
 
                 Ok(())

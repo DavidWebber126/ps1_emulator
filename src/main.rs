@@ -18,7 +18,7 @@ fn main() {
         ..Default::default()
     };
 
-    let folder: PathBuf = PathBuf::from("roms/");
+    let folder: PathBuf = PathBuf::from("roms/tests");
 
     let _ = eframe::run_native(
         "PS1 Emulator",

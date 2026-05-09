@@ -108,10 +108,8 @@ impl eframe::App for MyApp {
                             key: egui::Key::L,
                             pressed: true,
                             ..
-                        } => {
-                            if self.paused {
-                                println!("PC is 0x{:08X}", self.cpu.registers.program_counter);
-                            }
+                        } if self.paused => {
+                            println!("PC is 0x{:08X}", self.cpu.registers.program_counter);
                         }
                         _ => {}
                     }

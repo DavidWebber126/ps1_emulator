@@ -9,6 +9,19 @@ const DITHER_TABLE: [[i8; 4]; 4] = [
     [3, -1, 2, -2],
 ];
 
+enum SemiTransparency {
+    Blend,
+    Add,
+    Subtract,
+    QuarterBlend,
+}
+
+enum TextureBits {
+    Four,
+    Eight,
+    Fifteen,
+}
+
 #[repr(C)]
 #[derive(Default, Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Color {
@@ -86,7 +99,14 @@ pub struct Gp0 {
     pub vram: Box<[Color; 524288]>, // 1024 x 512 grid of pixels
     pub params: [u32; 16],
     //pub command_buffer: VecDeque<u32>, // Holds at most 16 words (i.e 16 u32s)
-    pub draw_mode: u32,
+    pub tex_page_x: u8,
+    pub tex_page_y: bool,
+    semitransparency: SemiTransparency,
+    tex_page_colors: TextureBits,
+    pub dither_enabled: bool,
+    pub draw_to_display: bool,
+    pub rect_x_flip: bool,
+    pub rect_y_flip: bool,
     pub texture_window: u32,
     pub draw_area_top_left: (u32, u32),
     pub draw_area_bot_right: (u32, u32),
@@ -101,7 +121,14 @@ impl Gp0 {
             vram: Box::new([Color::from(0, 0, 0, 255); 524288]),
             params: [0; 16],
             //command_buffer: VecDeque::with_capacity(16),
-            draw_mode: 0,
+            tex_page_x: 0,
+            tex_page_y: false,
+            semitransparency: SemiTransparency::Blend,
+            tex_page_colors: TextureBits::Four,
+            dither_enabled: false,
+            draw_to_display: false,
+            rect_x_flip: false,
+            rect_y_flip: false,
             texture_window: 0,
             draw_area_top_left: (0, 0),
             draw_area_bot_right: (0, 0),
@@ -135,17 +162,31 @@ impl Gp0 {
 
         let prev_color = self.vram[addr];
 
-        let new_r = r / 2 + prev_color.r / 2;
-        let new_g = g / 2 + prev_color.g / 2;
-        let new_b = b / 2 + prev_color.b / 2;
+        let (new_r, new_g, new_b) = match self.semitransparency {
+            SemiTransparency::Blend => (
+                r / 2 + prev_color.r / 2,
+                g / 2 + prev_color.g / 2,
+                b / 2 + prev_color.b / 2,
+            ),
+            SemiTransparency::Add => (r + prev_color.r, g + prev_color.g, b + prev_color.b),
+            SemiTransparency::Subtract => (prev_color.r - r, prev_color.g - g, prev_color.b - b),
+            SemiTransparency::QuarterBlend => (
+                r / 4 + prev_color.r,
+                g / 4 + prev_color.g,
+                b / 4 + prev_color.b,
+            ),
+        };
 
         self.vram[addr] = Color::from(new_r, new_g, new_b, 255);
     }
 
     pub fn read_vram(&self, addr: usize) -> u16 {
         let (r, g, b, _) = self.vram[addr].to_tuple();
+        let new_r = convert_8bit_to_5bit(r) as u16;
+        let new_g = convert_8bit_to_5bit(g) as u16;
+        let new_b = convert_8bit_to_5bit(b) as u16;
 
-        r as u16 | (g as u16) << 5 | (b as u16) << 10
+        new_r as u16 | (new_g as u16) << 5 | (new_b as u16) << 10
     }
 
     fn copy_vram(&mut self, source_addr: usize, dest_addr: usize) {
@@ -276,8 +317,28 @@ impl Gp0 {
                                 }
                             }
                             0xE1 => {
-                                // Draw Mode Setting
-                                self.draw_mode = val;
+                                // Draw Mode Settings
+                                self.tex_page_x = (val & 0b1111) as u8;
+                                self.tex_page_y = val & 0x10 > 0;
+                                self.dither_enabled = val & 0x200 > 0;
+                                self.draw_to_display = val & 0x400 > 0;
+                                self.rect_x_flip = val & 0x1000 > 0;
+                                self.rect_y_flip = val & 0x2000 > 0;
+                                match (val >> 7) & 0b11 {
+                                    0 => self.tex_page_colors = TextureBits::Four,
+                                    1 => self.tex_page_colors = TextureBits::Eight,
+                                    2 => self.tex_page_colors = TextureBits::Fifteen,
+                                    _ => {
+                                        event!(target: "ps1_emulator::GPU", Level::WARN, "Texture size outside of Four, Eight and Fifteen");
+                                    }
+                                }
+                                match (val >> 5) & 0b11 {
+                                    0 => self.semitransparency = SemiTransparency::Blend,
+                                    1 => self.semitransparency = SemiTransparency::Add,
+                                    2 => self.semitransparency = SemiTransparency::Subtract,
+                                    3 => self.semitransparency = SemiTransparency::QuarterBlend,
+                                    _ => panic!("Impossible"),
+                                }
 
                                 Gp0State::WaitingForCommand
                             }
@@ -355,6 +416,22 @@ impl Gp0 {
                             self.draw_untextured_rectangle(width, height);
                             Gp0State::WaitingForCommand
                         }
+                        Commands::TexturedRectangle => {
+                            let dimension = match (self.params[0] >> 27) & 0b11 {
+                                1 => 1,
+                                2 => 8,
+                                3 => 16,
+                                _ => panic!("Impossible"),
+                            };
+                            self.draw_textured_rectangle(dimension, dimension);
+                            Gp0State::WaitingForCommand
+                        }
+                        Commands::TexturedSizeRectangle => {
+                            let width = val & 0x3FF;
+                            let height = (val >> 16) & 0x1FF;
+                            self.draw_textured_rectangle(width, height);
+                            Gp0State::WaitingForCommand
+                        }
                         Commands::VramToVram => {
                             self.vram_copy();
                             Gp0State::WaitingForCommand
@@ -371,7 +448,6 @@ impl Gp0 {
                             self.rect_fill();
                             Gp0State::WaitingForCommand
                         }
-                        _ => panic!("Unimplemented Command {:?}", command),
                     }
                 } else {
                     Gp0State::ReceivingParams {
@@ -799,7 +875,7 @@ impl Gp0 {
                     let r = (a * r0 as f32 + b * r1 as f32 + c * r2 as f32).round() as u8;
                     let g = (a * g0 as f32 + b * g1 as f32 + c * g2 as f32).round() as u8;
                     let b = (a * b0 as f32 + b * b1 as f32 + c * b2 as f32).round() as u8;
-                    let (r, g, b) = if (self.draw_mode >> 9) & 1 > 0 {
+                    let (r, g, b) = if self.dither_enabled {
                         dither((r, g, b), (x, y))
                     } else {
                         (r, g, b)
@@ -930,6 +1006,72 @@ impl Gp0 {
         };
     }
 
+    fn draw_textured_rectangle(&mut self, width: u32, height: u32) {
+        let command = self.params[0];
+
+        let use_alpha = command & 0x2000000 > 0;
+        let use_modulation = command & 0x1000000 == 0;
+
+        let tex_page_base_x = ((self.tex_page_x as u32) * 64) as u16;
+        let tex_page_base_y = (256 * (self.tex_page_y as u32)) as u16;
+        let u_offset = self.params[2] & 0xFF;
+        let v_offset = (self.params[2] >> 8) & 0xFF;
+        let clut = (self.params[2] >> 16) as u16;
+        let clut_x = 16 * (clut & 0x3F);
+        let clut_y = (clut >> 6) & 0x1FF;
+
+        let vram_x = self.params[1] & 0x3FF;
+        let vram_y = (self.params[1] >> 16) & 0x1FF;
+        for y in 0..height {
+            for x in 0..width {
+                let vram_row = (vram_y + y) & 0x1FF;
+                let vram_col = (vram_x + x) & 0x3FF;
+                if (self.draw_area_top_left.0..self.draw_area_bot_right.0).contains(&vram_col)
+                    && (self.draw_area_top_left.1..self.draw_area_bot_right.1).contains(&vram_row)
+                {
+                    let u = if self.rect_x_flip { u_offset - x } else { x + u_offset };
+                    let v = if self.rect_y_flip { v_offset - y } else { y + v_offset };
+                    let pixel = match self.tex_page_colors {
+                        TextureBits::Four => self.get_texel_4bit(
+                            u,
+                            v,
+                            (clut_x, clut_y),
+                            (tex_page_base_x, tex_page_base_y),
+                        ),
+                        TextureBits::Eight => self.get_texel_8bit(
+                            u,
+                            v,
+                            (clut_x, clut_y),
+                            (tex_page_base_x, tex_page_base_y),
+                        ),
+                        TextureBits::Fifteen => {
+                            self.get_texel_15bit(u, v, (tex_page_base_x, tex_page_base_y))
+                        }
+                    };
+
+                    let vram_addr = 1024 * vram_row as usize + vram_col as usize;
+
+                    if pixel == 0 {
+                        continue;
+                    }
+
+                    let pixel = if use_modulation {
+                        let color = command & 0xFFFFFF;
+                        modulate_5bit_color(pixel, color)
+                    } else {
+                        pixel
+                    };
+
+                    if use_alpha {
+                        self.write_5bit_color_alpha(vram_addr, pixel);
+                    } else {
+                        self.write_5bit_color(vram_addr, pixel);
+                    }
+                }
+            }
+        }
+    }
+
     fn draw_untextured_rectangle(&mut self, width: u32, height: u32) {
         let command = self.params[0];
 
@@ -983,6 +1125,33 @@ impl Gp0 {
                 self.write_5bit_color(vram_addr, pixel);
             }
         }
+    }
+
+    fn get_texel_4bit(&self, x: u32, y: u32, clut: (u16, u16), tex_page: (u16, u16)) -> u16 {
+        // Get texel at (x,y) relative to to the texture page
+        let tex_addr =
+            x as usize / 4 + tex_page.0 as usize + 1024 * (y as usize + tex_page.1 as usize);
+        let texel = self.read_vram(tex_addr);
+        // Get the index offset for current pixel to be used in the clut
+        let index = (texel >> (4 * (x % 4))) & 0xF;
+        let clut_addr = 1024 * (clut.1 as usize) + clut.0 as usize + index as usize;
+        self.read_vram(clut_addr)
+    }
+
+    fn get_texel_8bit(&self, x: u32, y: u32, clut: (u16, u16), tex_page: (u16, u16)) -> u16 {
+        // Get texel at (x,y) relative to to the texture page
+        let tex_addr =
+            x as usize / 2 + tex_page.0 as usize + 1024 * (y as usize + tex_page.1 as usize);
+        let texel = self.read_vram(tex_addr);
+        // Get the index offset for current pixel to be used in the clut
+        let index = (texel >> (8 * (x % 2))) & 0xFF;
+        let clut_addr = 1024 * (clut.1 as usize) + clut.0 as usize + index as usize;
+        self.read_vram(clut_addr)
+    }
+
+    fn get_texel_15bit(&self, x: u32, y: u32, tex_page: (u16, u16)) -> u16 {
+        let tex_addr = x as usize + tex_page.0 as usize + 1024 * (y as usize + tex_page.1 as usize);
+        self.read_vram(tex_addr)
     }
 
     pub fn is_sending_data(&self) -> bool {
@@ -1042,6 +1211,22 @@ fn dither(color: (u8, u8, u8), pixel: (u32, u32)) -> (u8, u8, u8) {
     )
 }
 
+fn modulate_5bit_color(col1: u16, col2: u32) -> u16 {
+    let r1 = convert_5bit_to_8bit(col1 & 0x1F) as f32;
+    let g1 = convert_5bit_to_8bit((col1 >> 5) & 0x1F) as f32;
+    let b1 = convert_5bit_to_8bit((col1 >> 10) & 0x1F) as f32;
+
+    let r2 = (col2 & 0xFF) as f32;
+    let g2 = ((col2 >> 8) & 0xFF) as f32;
+    let b2 = ((col2 >> 16) & 0xFF) as f32;
+
+    let new_r = (((r1 * r2) / 128.0).round() as u8) >> 3;
+    let new_g = (((g1 * g2) / 128.0).round() as u8) >> 3;
+    let new_b = (((b1 * b2) / 128.0).round() as u8) >> 3;
+
+    new_r as u16 | (new_g as u16) << 5 | (new_b as u16) << 10
+}
+
 fn convert_5bit_to_8bit(color: u16) -> u8 {
     match color {
         0 => 0,
@@ -1080,7 +1265,7 @@ fn convert_5bit_to_8bit(color: u16) -> u8 {
     }
 }
 
-fn _convert_8bit_to_5bit(color: u8) -> u16 {
+fn convert_8bit_to_5bit(color: u8) -> u16 {
     match color {
         0 => 0,
         8 => 1,

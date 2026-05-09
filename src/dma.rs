@@ -74,10 +74,10 @@ impl Dma {
     }
 
     pub fn start_dma(&mut self) {
-        self.channel_control = self.channel_control & 0xEFFFFFFF;
+        self.channel_control &= 0xEFFFFFFF;
     }
 
     pub fn finish_dma(&mut self) {
-        self.channel_control = self.channel_control & 0xFEFFFFFF;
+        self.channel_control &= 0xFEFFFFFF;
     }
 }

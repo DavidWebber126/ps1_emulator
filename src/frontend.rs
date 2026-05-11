@@ -169,12 +169,12 @@ impl eframe::App for MyApp {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ctx.input(|i| {
                     for event in &i.events {
-                        match event {
-                            Event::Key {
-                                key: egui::Key::Escape,
-                                ..
-                            } => std::process::exit(0),
-                            _ => {}
+                        if let Event::Key {
+                            key: egui::Key::Escape,
+                            ..
+                        } = event
+                        {
+                            std::process::exit(0)
                         }
                     }
                 });

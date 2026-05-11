@@ -97,6 +97,7 @@ enum Gp0State {
 pub struct Gp0 {
     state: Gp0State,
     pub vram: Box<[Color; 524288]>, // 1024 x 512 grid of pixels
+    mask_field: [bool; 524288],     // 1024 x 512 simulate bit 16 mask field for each vram pixel
     pub params: [u32; 16],
     //pub command_buffer: VecDeque<u32>, // Holds at most 16 words (i.e 16 u32s)
     pub tex_page_x: u8,
@@ -111,7 +112,8 @@ pub struct Gp0 {
     pub draw_area_top_left: (u32, u32),
     pub draw_area_bot_right: (u32, u32),
     pub draw_offset: (i16, i16),
-    pub mask_bits: u8,
+    pub mask_while_draw: bool,
+    pub mask_before_draw: bool,
 }
 
 impl Gp0 {
@@ -119,6 +121,7 @@ impl Gp0 {
         Self {
             state: Gp0State::WaitingForCommand,
             vram: Box::new([Color::from(0, 0, 0, 255); 524288]),
+            mask_field: [false; 524288],
             params: [0; 16],
             //command_buffer: VecDeque::with_capacity(16),
             tex_page_x: 0,
@@ -133,20 +136,35 @@ impl Gp0 {
             draw_area_top_left: (0, 0),
             draw_area_bot_right: (0, 0),
             draw_offset: (0, 0),
-            mask_bits: 0,
+            mask_while_draw: false,
+            mask_before_draw: false,
         }
     }
 
-    pub fn _write_vram(&mut self, addr: usize, val: u16) {
+    pub fn vram_fill(&mut self, width: u32, height: u32, vram_x: u32, vram_y: u32, val: u16) {
         // RGB555
-        let r = val & 0x1F;
-        let g = (val >> 5) & 0x1F;
-        let b = (val >> 10) & 0x1F;
+        let r = convert_5bit_to_8bit(val & 0x1F);
+        let g = convert_5bit_to_8bit((val >> 5) & 0x1F);
+        let b = convert_5bit_to_8bit((val >> 10) & 0x1F);
 
-        self.vram[addr] = Color::from(r as u8, g as u8, b as u8, 255);
+        let color = Color::from(r, g, b, 255);
+
+        for y in 0..height {
+            for x in 0..width {
+                let vram_addr = (vram_x + x) as usize + 1024 * (vram_y + y) as usize;
+                self.vram[vram_addr] = color;
+            }
+        }
     }
 
     fn write_5bit_color(&mut self, addr: usize, val: u16) {
+        if self.mask_before_draw && self.mask_field[addr] {
+            return;
+        }
+
+        // If Mask While Draw is set, then mask_field is forced to true. Otherwise set to bit 15
+        self.mask_field[addr] = self.mask_while_draw || (val & 0x8000 > 0);
+
         // RGB555
         let r = convert_5bit_to_8bit(val & 0x1F);
         let g = convert_5bit_to_8bit((val >> 5) & 0x1F);
@@ -156,6 +174,13 @@ impl Gp0 {
     }
 
     fn write_5bit_color_alpha(&mut self, addr: usize, val: u16) {
+        if self.mask_before_draw && self.mask_field[addr] {
+            return;
+        }
+
+        // If Mask While Draw is set, then mask_field is forced to true. Otherwise set to bit 15
+        self.mask_field[addr] = self.mask_while_draw || (val & 0x8000 > 0);
+
         let r = convert_5bit_to_8bit(val & 0x1F);
         let g = convert_5bit_to_8bit((val >> 5) & 0x1F);
         let b = convert_5bit_to_8bit((val >> 10) & 0x1F);
@@ -182,11 +207,30 @@ impl Gp0 {
 
     pub fn read_vram(&self, addr: usize) -> u16 {
         let (r, g, b, _) = self.vram[addr].to_tuple();
-        let new_r = convert_8bit_to_5bit(r) as u16;
-        let new_g = convert_8bit_to_5bit(g) as u16;
-        let new_b = convert_8bit_to_5bit(b) as u16;
+        let new_r = convert_8bit_to_5bit(r);
+        let new_g = convert_8bit_to_5bit(g);
+        let new_b = convert_8bit_to_5bit(b);
 
-        new_r as u16 | (new_g as u16) << 5 | (new_b as u16) << 10
+        let mask = self.mask_field[addr] as u16;
+
+        new_r | (new_g << 5) | (new_b << 10) | (mask << 15)
+    }
+
+    fn modulate_5bit_color(&self, col1: u16, col2: u32) -> u16 {
+        let mask = col1 & 0x8000;
+        let r1 = convert_5bit_to_8bit(col1 & 0x1F) as f32;
+        let g1 = convert_5bit_to_8bit((col1 >> 5) & 0x1F) as f32;
+        let b1 = convert_5bit_to_8bit((col1 >> 10) & 0x1F) as f32;
+
+        let r2 = (col2 & 0xFF) as f32;
+        let g2 = ((col2 >> 8) & 0xFF) as f32;
+        let b2 = ((col2 >> 16) & 0xFF) as f32;
+
+        let new_r = (((r1 * r2) / 128.0).round() as u8) >> 3;
+        let new_g = (((g1 * g2) / 128.0).round() as u8) >> 3;
+        let new_b = (((b1 * b2) / 128.0).round() as u8) >> 3;
+
+        new_r as u16 | (new_g as u16) << 5 | (new_b as u16) << 10 | mask
     }
 
     fn copy_vram(&mut self, source_addr: usize, dest_addr: usize) {
@@ -316,6 +360,10 @@ impl Gp0 {
                                     idx: 1,
                                 }
                             }
+                            0x03 => {
+                                // Unknown?
+                                Gp0State::WaitingForCommand
+                            }
                             0xE1 => {
                                 // Draw Mode Settings
                                 self.tex_page_x = (val & 0b1111) as u8;
@@ -375,7 +423,8 @@ impl Gp0 {
                             }
                             0xE6 => {
                                 // Mask Bit Setting
-                                self.mask_bits = (val & 0xF) as u8;
+                                self.mask_while_draw = val & 1 > 0;
+                                self.mask_before_draw = val & 2 > 0;
 
                                 Gp0State::WaitingForCommand
                             }
@@ -445,7 +494,18 @@ impl Gp0 {
                             self.vram_to_cpu_init()
                         }
                         Commands::VramFill => {
-                            self.rect_fill();
+                            let command = self.params[0];
+                            let vram_x = self.params[1] & 0x3FF;
+                            let vram_y = (self.params[1] >> 16) & 0x1FF;
+                            let width = self.params[2] & 0x3FF;
+                            let height = (self.params[2] >> 16) & 0x1FF;
+
+                            let r = (command & 0xFF) >> 3;
+                            let g = ((command >> 8) & 0xFF) >> 3;
+                            let b = ((command >> 16) & 0xFF) >> 3;
+
+                            let pixel = (r | (g << 5) | (b << 10)) as u16;
+                            self.vram_fill(width, height, vram_x, vram_y, pixel);
                             Gp0State::WaitingForCommand
                         }
                     }
@@ -1029,8 +1089,22 @@ impl Gp0 {
                 if (self.draw_area_top_left.0..self.draw_area_bot_right.0).contains(&vram_col)
                     && (self.draw_area_top_left.1..self.draw_area_bot_right.1).contains(&vram_row)
                 {
-                    let u = if self.rect_x_flip { u_offset - x } else { x + u_offset };
-                    let v = if self.rect_y_flip { v_offset - y } else { y + v_offset };
+                    let u = if self.rect_x_flip {
+                        u_offset - x
+                    } else {
+                        x + u_offset
+                    };
+                    let v = if self.rect_y_flip {
+                        v_offset - y
+                    } else {
+                        y + v_offset
+                    };
+                    let mask_x = self.texture_window & 0x1F;
+                    let mask_y = (self.texture_window >> 5) & 0x1F;
+                    let offset_x = (self.texture_window >> 10) & 0x1F;
+                    let offset_y = (self.texture_window >> 15) & 0x1F;
+                    let u = (u & !(mask_x * 8)) | (8 * (mask_x & offset_x));
+                    let v = (v & !(mask_y * 8)) | (8 * (mask_y & offset_y));
                     let pixel = match self.tex_page_colors {
                         TextureBits::Four => self.get_texel_4bit(
                             u,
@@ -1057,7 +1131,7 @@ impl Gp0 {
 
                     let pixel = if use_modulation {
                         let color = command & 0xFFFFFF;
-                        modulate_5bit_color(pixel, color)
+                        self.modulate_5bit_color(pixel, color)
                     } else {
                         pixel
                     };
@@ -1100,29 +1174,6 @@ impl Gp0 {
                         self.write_5bit_color(vram_addr, pixel);
                     }
                 }
-            }
-        }
-    }
-
-    fn rect_fill(&mut self) {
-        let command = self.params[0];
-        let vram_x = self.params[1] & 0x3FF;
-        let vram_y = (self.params[1] >> 16) & 0x1FF;
-        let width = self.params[2] & 0x3FF;
-        let height = (self.params[2] >> 16) & 0x1FF;
-
-        let r = (command & 0xFF) >> 3;
-        let g = ((command >> 8) & 0xFF) >> 3;
-        let b = ((command >> 16) & 0xFF) >> 3;
-
-        let pixel = (r | (g << 5) | (b << 10)) as u16;
-
-        for y in 0..height {
-            for x in 0..width {
-                let vram_row = ((vram_y + y) & 0x1FF) as usize;
-                let vram_col = ((vram_x + x) & 0x3FF) as usize;
-                let vram_addr = 1024 * vram_row + vram_col;
-                self.write_5bit_color(vram_addr, pixel);
             }
         }
     }
@@ -1209,22 +1260,6 @@ fn dither(color: (u8, u8, u8), pixel: (u32, u32)) -> (u8, u8, u8) {
         color.1.saturating_add_signed(offset),
         color.2.saturating_add_signed(offset),
     )
-}
-
-fn modulate_5bit_color(col1: u16, col2: u32) -> u16 {
-    let r1 = convert_5bit_to_8bit(col1 & 0x1F) as f32;
-    let g1 = convert_5bit_to_8bit((col1 >> 5) & 0x1F) as f32;
-    let b1 = convert_5bit_to_8bit((col1 >> 10) & 0x1F) as f32;
-
-    let r2 = (col2 & 0xFF) as f32;
-    let g2 = ((col2 >> 8) & 0xFF) as f32;
-    let b2 = ((col2 >> 16) & 0xFF) as f32;
-
-    let new_r = (((r1 * r2) / 128.0).round() as u8) >> 3;
-    let new_g = (((g1 * g2) / 128.0).round() as u8) >> 3;
-    let new_b = (((b1 * b2) / 128.0).round() as u8) >> 3;
-
-    new_r as u16 | (new_g as u16) << 5 | (new_b as u16) << 10
 }
 
 fn convert_5bit_to_8bit(color: u16) -> u8 {

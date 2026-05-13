@@ -1,6 +1,6 @@
 use crate::cop0::Cop0;
 use crate::cpu::ExceptionType;
-use crate::dma::{Dma, SyncMode};
+use crate::dma::{Dicr, Dma, SyncMode};
 use crate::gpu::Gpu;
 use crate::interrupts::Interrupt;
 use crate::timer::Timer;
@@ -22,7 +22,7 @@ pub struct Bus {
     pub dma2: Dma,
     pub dma6: Dma,
     pub dpcr: u32,
-    pub dicr: u32,
+    pub dicr: Dicr,
 }
 
 impl Bus {
@@ -42,22 +42,24 @@ impl Bus {
             dma2: Dma::new(),
             dma6: Dma::new(),
             dpcr: 0x07654321,
-            dicr: 0,
+            dicr: Dicr::new(),
         }
     }
 
     pub fn tick(&mut self, cycles: u32) {
-        self.gpu.tick(cycles);
+        if self.gpu.tick(cycles) {
+            self.interrupts.set_vblank_irq();
+        }
 
         for _ in 0..2 {
             if self.timer0.tick() {
-                self.interrupts.stat |= 0x00000010
+                self.interrupts.set_tmr0_irq();
             }
             if self.timer1.tick() {
-                self.interrupts.stat |= 0x00000020
+                self.interrupts.set_tmr1_irq();
             }
             if self.timer2.tick() {
-                self.interrupts.stat |= 0x00000040
+                self.interrupts.set_tmr2_irq();
             }
         }
     }
@@ -470,11 +472,11 @@ impl Bus {
             0x1F801063 => Ok(()),
             // I_STAT
             0x1F801070 => {
-                self.interrupts.stat = (self.interrupts.stat & 0xFFFFFF00) + val as u32;
+                self.interrupts.write_stat_low_byte(val);
                 Ok(())
             }
             0x1F801071 => {
-                self.interrupts.stat = (self.interrupts.stat & 0xFFFF00FF) + ((val as u32) << 8);
+                self.interrupts.write_stat_hi_byte(val);
                 Ok(())
             }
             0x1F801072 => Ok(()),
@@ -514,10 +516,12 @@ impl Bus {
                 Ok(())
             }
             0x1F801106 => {
+                // Timer 0 Mode Upper Bits unused
                 self.timer0.counter = 0;
                 Ok(())
             }
             0x1F801107 => {
+                // Timer 0 Mode Upper Bits unused
                 self.timer0.counter = 0;
                 Ok(())
             }
@@ -555,10 +559,12 @@ impl Bus {
                 Ok(())
             }
             0x1F801116 => {
+                // Timer 1 Mode Upper Bits unused
                 self.timer1.counter = 0;
                 Ok(())
             }
             0x1F801117 => {
+                // Timer 1 Mode Upper Bits unused
                 self.timer1.counter = 0;
                 Ok(())
             }
@@ -596,10 +602,12 @@ impl Bus {
                 Ok(())
             }
             0x1F801126 => {
+                // Timer 2 Mode Upper Bits unused
                 self.timer2.counter = 0;
                 Ok(())
             }
             0x1F801127 => {
+                // Timer 2 Mode Upper Bits unused
                 self.timer2.counter = 0;
                 Ok(())
             }
@@ -725,7 +733,7 @@ impl Bus {
             // DICR
             0x1F8010F4 => {
                 event!(target: "ps1_emulator::BUS", Level::TRACE, "DICR DMA Unimplemented");
-                Ok(self.dicr)
+                Ok(self.dicr.read())
             }
             //
             // GPU
@@ -818,6 +826,12 @@ impl Bus {
                         }
                     }
                     self.dma2.finish_dma();
+                    if self.dicr.dma2_mask_set() {
+                        self.dicr.dma2_set_interrupt_flag();
+                        if self.dicr.master_interrupt_set() {
+                            self.interrupts.set_dma_irq();
+                        }
+                    }
                 }
 
                 Ok(())
@@ -859,8 +873,13 @@ impl Bus {
                             panic!("LinkedList shouldn't happen for DMA 6");
                         }
                     }
-
                     self.dma6.finish_dma();
+                    if self.dicr.dma6_mask_set() {
+                        self.dicr.dma6_set_interrupt_flag();
+                        if self.dicr.master_interrupt_set() {
+                            self.interrupts.set_dma_irq();
+                        }
+                    }
                 }
 
                 Ok(())
@@ -876,7 +895,7 @@ impl Bus {
             // DICR - DMA Interrupt Register
             0x1F8010F4 => {
                 event!(target: "ps1_emulator::BUS", Level::TRACE, "DICR DMA Unimplemented {:08X}", val);
-                self.dicr = val;
+                self.dicr.write(val);
                 Ok(())
             }
             0x1F801810 => {

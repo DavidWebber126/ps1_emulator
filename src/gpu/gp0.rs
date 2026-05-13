@@ -16,6 +16,7 @@ enum SemiTransparency {
     QuarterBlend,
 }
 
+#[derive(Clone, Copy)]
 enum TextureBits {
     Four,
     Eight,
@@ -554,16 +555,58 @@ impl Gp0 {
 
                     let (min, max) = self.get_bounds(v0, v1, v2);
 
-                    if !shaded {
-                        self.rasterize_triangle(v0, v1, v2, min, max);
-                    }
+                    match (shaded, textured) {
+                        (false, false) => {
+                            self.rasterize_triangle(v0, v1, v2, min, max);
+                        }
+                        (false, true) => {
+                            let t0 = self.params[2];
+                            let t1 = self.params[4];
+                            let t2 = self.params[6];
 
-                    if shaded && !textured {
-                        let c0 = self.params[1];
-                        let c1 = self.params[3];
-                        let c2 = self.params[5];
+                            let uv0 = (t0 & 0xFF, (t0 >> 8) & 0xFF);
+                            let uv1 = (t1 & 0xFF, (t1 >> 8) & 0xFF);
+                            let uv2 = (t2 & 0xFF, (t2 >> 8) & 0xFF);
 
-                        self.rasterize_triangle_shaded(v0, v1, v2, c0, c1, c2, min, max);
+                            let clut_x = 16 * ((t0 >> 16) & 0x3F);
+                            let clut_y = (t0 >> 22) & 0x1FF;
+                            let clut = (clut_x as u16, clut_y as u16);
+
+                            let tex_page = (t1 >> 16) & 0xFFFF;
+
+                            self.rasterize_triangle_textured(
+                                v0, v1, v2, uv0, uv1, uv2, tex_page, clut, min, max,
+                            );
+                        }
+                        (true, false) => {
+                            let c0 = self.params[1];
+                            let c1 = self.params[3];
+                            let c2 = self.params[5];
+
+                            self.rasterize_triangle_shaded(v0, v1, v2, c0, c1, c2, min, max);
+                        }
+                        (true, true) => {
+                            let c0 = self.params[1];
+                            let t0 = self.params[3];
+                            let c1 = self.params[4];
+                            let t1 = self.params[6];
+                            let c2 = self.params[7];
+                            let t2 = self.params[9];
+
+                            let uv0 = (t0 & 0xFF, (t0 >> 8) & 0xFF);
+                            let uv1 = (t1 & 0xFF, (t1 >> 8) & 0xFF);
+                            let uv2 = (t2 & 0xFF, (t2 >> 8) & 0xFF);
+
+                            let clut_x = 16 * ((t0 >> 16) & 0x3F);
+                            let clut_y = (t0 >> 22) & 0x1FF;
+                            let clut = (clut_x as u16, clut_y as u16);
+
+                            let tex_page = (t1 >> 16) & 0xFFFF;
+
+                            self.rasterize_triangle_textured_and_shaded(
+                                v0, v1, v2, uv0, uv1, uv2, c0, c1, c2, tex_page, clut, min, max,
+                            );
+                        }
                     }
 
                     if size == 4 {
@@ -575,16 +618,56 @@ impl Gp0 {
 
                         let (min, max) = self.get_bounds(v1, v2, v3);
 
-                        if !shaded {
-                            self.rasterize_triangle(v1, v2, v3, min, max);
-                        }
+                        match (shaded, textured) {
+                            (false, false) => {
+                                self.rasterize_triangle(v1, v2, v3, min, max);
+                            }
+                            (false, true) => {
+                                let t1 = self.params[4];
+                                let t2 = self.params[6];
+                                let t3 = self.params[8];
 
-                        if shaded && !textured {
-                            let c1 = self.params[3];
-                            let c2 = self.params[5];
-                            let c3 = self.params[7];
+                                let uv1 = (t1 & 0xFF, (t1 >> 8) & 0xFF);
+                                let uv2 = (t2 & 0xFF, (t2 >> 8) & 0xFF);
+                                let uv3 = (t3 & 0xFF, (t3 >> 8) & 0xFF);
 
-                            self.rasterize_triangle_shaded(v1, v2, v3, c1, c2, c3, min, max);
+                                let clut_x = 16 * ((self.params[2] >> 16) & 0x3F);
+                                let clut_y = (self.params[2] >> 22) & 0x1FF;
+                                let clut = (clut_x as u16, clut_y as u16);
+                                let tex_page = (t1 >> 16) & 0xFFFF;
+
+                                self.rasterize_triangle_textured(
+                                    v1, v2, v3, uv1, uv2, uv3, tex_page, clut, min, max,
+                                );
+                            }
+                            (true, false) => {
+                                let c1 = self.params[3];
+                                let c2 = self.params[5];
+                                let c3 = self.params[7];
+
+                                self.rasterize_triangle_shaded(v1, v2, v3, c1, c2, c3, min, max);
+                            }
+                            (true, true) => {
+                                let c1 = self.params[4];
+                                let t1 = self.params[6];
+                                let c2 = self.params[7];
+                                let t2 = self.params[9];
+                                let c3 = self.params[10];
+                                let t3 = self.params[12];
+
+                                let uv1 = (t1 & 0xFF, (t1 >> 8) & 0xFF);
+                                let uv2 = (t2 & 0xFF, (t2 >> 8) & 0xFF);
+                                let uv3 = (t3 & 0xFF, (t3 >> 8) & 0xFF);
+
+                                let clut_x = 16 * ((self.params[3] >> 16) & 0x3F);
+                                let clut_y = (self.params[3] >> 22) & 0x1FF;
+                                let clut = (clut_x as u16, clut_y as u16);
+                                let tex_page = (t1 >> 16) & 0xFFFF;
+
+                                self.rasterize_triangle_textured_and_shaded(
+                                    v1, v2, v3, uv1, uv2, uv3, c1, c2, c3, tex_page, clut, min, max,
+                                );
+                            }
                         }
                     }
 
@@ -893,8 +976,73 @@ impl Gp0 {
                 }
             }
         }
+    }
 
-        event!(target: "ps1_emulator::GPU", Level::TRACE, "Rasterized Triangle");
+    fn rasterize_triangle_textured(
+        &mut self,
+        mut v0: (u32, u32),
+        mut v1: (u32, u32),
+        v2: (u32, u32),
+        mut uv0: (u32, u32),
+        mut uv1: (u32, u32),
+        uv2: (u32, u32),
+        tex_page: u32,
+        clut: (u16, u16),
+        min: (u32, u32),
+        max: (u32, u32),
+    ) {
+        if min.0 > max.0 || min.1 > max.1 {
+            return;
+        }
+
+        if cross_product(v0, v1, v2) < 0 {
+            mem::swap(&mut v0, &mut v1);
+            mem::swap(&mut uv0, &mut uv1);
+        }
+
+        let use_alpha = (self.params[0] >> 25) & 0x1 > 0;
+        let use_modulation = self.params[0] & 0x1000000 == 0;
+
+        let texture_bits = match (tex_page >> 7) & 0b11 {
+            0 => TextureBits::Four,
+            1 => TextureBits::Eight,
+            2 => TextureBits::Fifteen,
+            _ => {
+                event!(target: "ps1_emulator::GPU", Level::ERROR, "Texture size outside of Four, Eight and Fifteen");
+                panic!("Impossible")
+            }
+        };
+        let tex_page_x = 64 * (tex_page & 0xF);
+        let tex_page_y = 256 * ((tex_page >> 4) & 0x1);
+        let tex_page = (tex_page_x as u16, tex_page_y as u16);
+
+        for y in min.1..=max.1 {
+            for x in min.0..=max.0 {
+                if let Some([a, b, c]) = inside_triange((x, y), v0, v1, v2) {
+                    let u = (a * uv0.0 as f32 + b * uv1.0 as f32 + c * uv2.0 as f32).round() as u32;
+                    let v = (a * uv0.1 as f32 + b * uv1.1 as f32 + c * uv2.1 as f32).round() as u32;
+                    let pixel = self.get_color_from_uv(u, v, clut, tex_page, texture_bits);
+
+                    if pixel == 0 {
+                        continue;
+                    }
+
+                    let pixel = if use_modulation {
+                        let color = self.params[0] & 0xFFFFFF;
+                        self.modulate_5bit_color(pixel, color)
+                    } else {
+                        pixel
+                    };
+
+                    let vram_addr = 1024 * (y as usize) + x as usize;
+                    if use_alpha {
+                        self.write_5bit_color_alpha(vram_addr, pixel);
+                    } else {
+                        self.write_5bit_color(vram_addr, pixel);
+                    }
+                }
+            }
+        }
     }
 
     fn rasterize_triangle_shaded(
@@ -944,6 +1092,93 @@ impl Gp0 {
                     let g = (g >> 3) as u16;
                     let b = (b >> 3) as u16;
                     let pixel = r | (g << 5) | (b << 10);
+
+                    let vram_addr = 1024 * (y as usize) + x as usize;
+                    if use_alpha {
+                        self.write_5bit_color_alpha(vram_addr, pixel);
+                    } else {
+                        self.write_5bit_color(vram_addr, pixel);
+                    }
+                }
+            }
+        }
+    }
+
+    fn rasterize_triangle_textured_and_shaded(
+        &mut self,
+        mut v0: (u32, u32),
+        mut v1: (u32, u32),
+        v2: (u32, u32),
+        mut uv0: (u32, u32),
+        mut uv1: (u32, u32),
+        uv2: (u32, u32),
+        mut c0: u32,
+        mut c1: u32,
+        c2: u32,
+        tex_page: u32,
+        clut: (u16, u16),
+        min: (u32, u32),
+        max: (u32, u32),
+    ) {
+        if min.0 > max.0 || min.1 > max.1 {
+            return;
+        }
+
+        if cross_product(v0, v1, v2) < 0 {
+            mem::swap(&mut v0, &mut v1);
+            mem::swap(&mut uv0, &mut uv1);
+            mem::swap(&mut c0, &mut c1);
+        }
+
+        let r0 = c0 & 0xFF;
+        let g0 = (c0 >> 8) & 0xFF;
+        let b0 = (c0 >> 16) & 0xFF;
+        let r1 = c1 & 0xFF;
+        let g1 = (c1 >> 8) & 0xFF;
+        let b1 = (c1 >> 16) & 0xFF;
+        let r2 = c2 & 0xFF;
+        let g2 = (c2 >> 8) & 0xFF;
+        let b2 = (c2 >> 16) & 0xFF;
+
+        let use_alpha = (self.params[0] >> 25) & 0x1 > 0;
+
+        let texture_bits = match (tex_page >> 7) & 0b11 {
+            0 => TextureBits::Four,
+            1 => TextureBits::Eight,
+            2 => TextureBits::Fifteen,
+            _ => {
+                event!(target: "ps1_emulator::GPU", Level::ERROR, "Texture size outside of Four, Eight and Fifteen");
+                panic!("Impossible")
+            }
+        };
+        let tex_page_x = 64 * (tex_page & 0xF);
+        let tex_page_y = 256 * ((tex_page >> 4) & 0x1);
+        let tex_page = (tex_page_x as u16, tex_page_y as u16);
+
+        for y in min.1..=max.1 {
+            for x in min.0..=max.0 {
+                if let Some([a, b, c]) = inside_triange((x, y), v0, v1, v2) {
+                    let u = (a * uv0.0 as f32 + b * uv1.0 as f32 + c * uv2.0 as f32).round() as u32;
+                    let v = (a * uv0.1 as f32 + b * uv1.1 as f32 + c * uv2.1 as f32).round() as u32;
+                    let pixel = self.get_color_from_uv(u, v, clut, tex_page, texture_bits);
+
+                    if pixel == 0 {
+                        continue;
+                    }
+
+                    let r = (a * r0 as f32 + b * r1 as f32 + c * r2 as f32).round() as u8;
+                    let g = (a * g0 as f32 + b * g1 as f32 + c * g2 as f32).round() as u8;
+                    let b = (a * b0 as f32 + b * b1 as f32 + c * b2 as f32).round() as u8;
+
+                    let (r, g, b) = if self.dither_enabled {
+                        dither((r, g, b), (x, y))
+                    } else {
+                        (r, g, b)
+                    };
+                    let color = (r as u32) | ((g as u32) << 8) | ((b as u32) << 16);
+
+                    let pixel = self.modulate_5bit_color(pixel, color as u32);
+
                     let vram_addr = 1024 * (y as usize) + x as usize;
                     if use_alpha {
                         self.write_5bit_color_alpha(vram_addr, pixel);
@@ -1099,29 +1334,14 @@ impl Gp0 {
                     } else {
                         y + v_offset
                     };
-                    let mask_x = self.texture_window & 0x1F;
-                    let mask_y = (self.texture_window >> 5) & 0x1F;
-                    let offset_x = (self.texture_window >> 10) & 0x1F;
-                    let offset_y = (self.texture_window >> 15) & 0x1F;
-                    let u = (u & !(mask_x * 8)) | (8 * (mask_x & offset_x));
-                    let v = (v & !(mask_y * 8)) | (8 * (mask_y & offset_y));
-                    let pixel = match self.tex_page_colors {
-                        TextureBits::Four => self.get_texel_4bit(
-                            u,
-                            v,
-                            (clut_x, clut_y),
-                            (tex_page_base_x, tex_page_base_y),
-                        ),
-                        TextureBits::Eight => self.get_texel_8bit(
-                            u,
-                            v,
-                            (clut_x, clut_y),
-                            (tex_page_base_x, tex_page_base_y),
-                        ),
-                        TextureBits::Fifteen => {
-                            self.get_texel_15bit(u, v, (tex_page_base_x, tex_page_base_y))
-                        }
-                    };
+
+                    let pixel = self.get_color_from_uv(
+                        u,
+                        v,
+                        (clut_x, clut_y),
+                        (tex_page_base_x, tex_page_base_y),
+                        self.tex_page_colors,
+                    );
 
                     let vram_addr = 1024 * vram_row as usize + vram_col as usize;
 
@@ -1203,6 +1423,33 @@ impl Gp0 {
     fn get_texel_15bit(&self, x: u32, y: u32, tex_page: (u16, u16)) -> u16 {
         let tex_addr = x as usize + tex_page.0 as usize + 1024 * (y as usize + tex_page.1 as usize);
         self.read_vram(tex_addr)
+    }
+
+    fn get_color_from_uv(
+        &self,
+        u: u32,
+        v: u32,
+        clut: (u16, u16),
+        tex_page: (u16, u16),
+        tex_page_color: TextureBits,
+    ) -> u16 {
+        let mask_x = self.texture_window & 0x1F;
+        let mask_y = (self.texture_window >> 5) & 0x1F;
+        let offset_x = (self.texture_window >> 10) & 0x1F;
+        let offset_y = (self.texture_window >> 15) & 0x1F;
+
+        let u = (u & !(mask_x * 8)) | (8 * (mask_x & offset_x));
+        let v = (v & !(mask_y * 8)) | (8 * (mask_y & offset_y));
+
+        match tex_page_color {
+            TextureBits::Four => {
+                self.get_texel_4bit(u, v, (clut.0, clut.1), (tex_page.0, tex_page.1))
+            }
+            TextureBits::Eight => {
+                self.get_texel_8bit(u, v, (clut.0, clut.1), (tex_page.0, tex_page.1))
+            }
+            TextureBits::Fifteen => self.get_texel_15bit(u, v, (tex_page.0, tex_page.1)),
+        }
     }
 
     pub fn is_sending_data(&self) -> bool {

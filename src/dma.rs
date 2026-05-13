@@ -81,3 +81,63 @@ impl Dma {
         self.channel_control &= 0xFEFFFFFF;
     }
 }
+
+pub struct Dicr(u32);
+
+impl Dicr {
+    pub fn new() -> Self {
+        Self(0)
+    }
+
+    pub fn read(&self) -> u32 {
+        self.0
+    }
+
+    pub fn write(&mut self, val: u32) {
+        event!(target: "ps1_emulator::DMA", Level::DEBUG, "Write DICR {:08X}", val);
+        self.0 &= !(val & 0x7F000000);
+
+        self.0 = val & 0x00FFFFFF;
+
+        self.master_interrupt_calc();
+    }
+
+    fn master_interrupt_calc(&mut self) {
+        if self.0 & 0x8000 > 0 {
+            event!(target: "ps1_emulator::DMA", Level::TRACE, "Master Interrupt Set");
+            self.0 |= 0x80000000;
+            return;
+        }
+
+        if self.0 & 0x800000 > 0 && self.0 & 0x7F000000 > 0 {
+            event!(target: "ps1_emulator::DMA", Level::TRACE, "Master Interrupt Set");
+            self.0 |= 0x80000000;
+            return;
+        }
+
+        event!(target: "ps1_emulator::DMA", Level::TRACE, "Master Interrupt Not Set");
+        self.0 &= 0x7FFFFFFF;
+    }
+
+    pub fn master_interrupt_set(&self) -> bool {
+        self.0 & 0x80000000 > 0
+    }
+
+    pub fn dma2_mask_set(&self) -> bool {
+        self.0 & 0x40000 > 0
+    }
+
+    pub fn dma2_set_interrupt_flag(&mut self) {
+        self.0 |= 0x4000000;
+        self.master_interrupt_calc();
+    }
+
+    pub fn dma6_mask_set(&self) -> bool {
+        self.0 & 0x400000 > 0
+    }
+
+    pub fn dma6_set_interrupt_flag(&mut self) {
+        self.0 |= 0x40000000;
+        self.master_interrupt_calc();
+    }
+}

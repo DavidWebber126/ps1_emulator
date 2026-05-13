@@ -48,15 +48,16 @@ impl Gpu {
         dma_ready + vram_data_ready + command_ready
     }
 
-    pub fn tick(&mut self, cycles: u32) {
+    pub fn tick(&mut self, cycles: u32) -> bool {
         self.counter += cycles as u64;
 
         if self.counter >= 564480 {
             event!(target: "ps1_emulator::GPU", Level::DEBUG, "Render Frame");
-            self.frame_is_ready = true;
             self.counter -= 564480;
+            self.frame_is_ready = true;
         } else {
             self.frame_is_ready = false;
         }
+        self.frame_is_ready
     }
 }

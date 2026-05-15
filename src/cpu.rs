@@ -1,6 +1,7 @@
 use core::fmt;
 
 use crate::bus::Bus;
+use crate::gte::Gte;
 
 use tracing::{Level, event, span};
 
@@ -108,14 +109,20 @@ pub enum ExceptionType {
 pub struct Cpu {
     pub registers: Registers,
     pub bus: Bus,
+    pub gte: Gte,
 }
 
 impl Cpu {
     pub fn new() -> Self {
         let registers = Registers::new();
         let bus = Bus::new();
+        let gte = Gte::new();
 
-        Self { registers, bus }
+        Self {
+            registers,
+            bus,
+            gte,
+        }
     }
 
     pub fn load_bios(&mut self, bios: &[u8]) {
@@ -802,7 +809,14 @@ impl Cpu {
             }
             // CFC2 - Move Control From Coprocessor 2
             0x48400000..=0x485FFFFF => {
-                todo!()
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
+
+                let asm = format!("CFC2 ${rt}, ${rd}");
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
+
+                self.registers.write(rd, self.gte.control_reg_read(rt));
+                Ok(())
             }
             // CFC3 - Move Control From Coprocessor 3
             0x4C400000..=0x4C5FFFFF => {
@@ -828,7 +842,9 @@ impl Cpu {
             }
             // COP2 - Coprocessor Operation 2
             0x4A000000..=0x4BFFFFFF => {
-                todo!()
+                let cofun = opcode & 0x1FFFFFF;
+                self.gte.write_command(cofun);
+                Ok(())
             }
             // COP3 - Coprocessor Operation 3
             0x4E000000..=0x4FFFFFFF => {
@@ -844,7 +860,16 @@ impl Cpu {
             }
             // CTC2 - Move Control To Coprocessor 2
             0x48C00000..=0x48DFFFFF => {
-                todo!()
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
+
+                let asm = format!("CTC2 ${rt}, ${rd}");
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
+
+                let val = self.registers.read(rt);
+                self.gte.control_reg_write(rd, val);
+
+                Ok(())
             }
             // CTC3 - Move Control To Coprocessor 3
             0x4CC00000..=0x4CDFFFFF => {
@@ -860,7 +885,16 @@ impl Cpu {
             }
             // LWC2 - Load Word to Coprocessor 2
             0xC8000000..=0xCBFFFFFF => {
-                todo!()
+                let base = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
+                let offset = (opcode & 0x0000FFFF) as i16;
+
+                let asm = format!("LWC2 ${rt}, {:04X}({:02X})", offset, base);
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
+
+                let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
+                self.gte.data_reg_write(rt, self.bus.mem_read_word(addr)?);
+                Ok(())
             }
             // LWC3 - Load Word to Coprocessor 3
             0xCC000000..=0xCFFFFFFF => {
@@ -887,7 +921,15 @@ impl Cpu {
             }
             // MFC2 - Move From Coprocessor 2
             0x48000000..=0x481FFFFF => {
-                todo!()
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
+
+                let asm = format!("MFC2 ${rt}, ${rd}");
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
+
+                let val = self.gte.data_reg_read(rd);
+                self.registers.write(rt, val);
+                Ok(())
             }
             // MFC3 - Move From Coprocesor 3
             0x4C000000..=0x4C1FFFFF => {
@@ -901,7 +943,10 @@ impl Cpu {
                 let asm = format!("MTC0 ${rt}, ${rd}");
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
 
-                self.bus.cop0.register_write(rd, self.registers.read(rt))?;
+                let val = self.registers.read(rt);
+                self.bus.cop0.register_write(rd, val)?;
+
+                self.gte.enabled = val & 0x40000000 > 0;
 
                 Ok(())
             }
@@ -911,7 +956,15 @@ impl Cpu {
             }
             // MTC2 - Move to Coprocessor 2
             0x48800000..=0x489FFFFF => {
-                todo!()
+                let rt = (opcode >> 16) & 0x1F;
+                let rd = (opcode >> 11) & 0x1F;
+
+                let asm = format!("MTC2 ${rt}, ${rd}");
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
+
+                let val = self.registers.read(rt);
+                self.gte.data_reg_write(rd, val);
+                Ok(())
             }
             // MTC3 - Move to Coprocessor 3
             0x4C800000..=0x4C9FFFFF => {
@@ -925,7 +978,17 @@ impl Cpu {
             }
             // SWC2 - Store Word from Coprocessor 2
             0xE8000000..=0xEBFFFFFF => {
-                todo!()
+                let base = (opcode >> 21) & 0x1F;
+                let rt = (opcode >> 16) & 0x1F;
+                let offset = (opcode & 0x0000FFFF) as i16;
+
+                let asm = format!("LWC2 ${rt}, {:04X}({:02X})", offset, base);
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", asm, self.registers);
+
+                let addr = self.registers.read(base).wrapping_add_signed(offset as i32);
+                let val = self.gte.data_reg_read(rt);
+                self.bus.mem_write_word(addr, val)?;
+                Ok(())
             }
             // SWC3 - Store Word from Coprocessor 3
             0xEC000000..=0xEFFFFFFF => {

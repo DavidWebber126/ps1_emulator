@@ -45,7 +45,26 @@ impl Gpu {
         let vram_data_ready = (self.gp0.is_sending_data() as u32) << 27;
         let dma_ready = (self.gp0.dma_ready() as u32) << 28;
 
-        dma_ready + vram_data_ready + command_ready
+        let tex_page_x = self.gp0.tex_page_x as u32;
+        let tex_page_y = (self.gp0.tex_page_y as u32) << 4;
+        let semitransparency = self.gp0.transparency_mode() << 5;
+        let texture_depth = self.gp0.texture_page_colors() << 7;
+        let dither = (self.gp0.dither_enabled as u32) << 9;
+        let display_draw = (self.gp0.draw_to_display as u32) << 10;
+        let force_mask_bit = (self.gp0.mask_while_draw as u32) << 11;
+        let texture_mask = (self.gp0.mask_before_draw as u32) << 12;
+
+        dma_ready
+            + vram_data_ready
+            + command_ready
+            + force_mask_bit
+            + texture_mask
+            + display_draw
+            + dither
+            + texture_depth
+            + semitransparency
+            + tex_page_y
+            + tex_page_x
     }
 
     pub fn tick(&mut self, cycles: u32) -> bool {

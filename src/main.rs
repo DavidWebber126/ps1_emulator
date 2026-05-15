@@ -4,7 +4,9 @@ mod cpu;
 mod dma;
 mod frontend;
 mod gpu;
+mod gte;
 mod interrupts;
+mod mdec;
 mod timer;
 mod tracing_setup;
 
@@ -18,17 +20,15 @@ fn main() {
         ..Default::default()
     };
 
-    let folder: PathBuf = PathBuf::from("roms/tests");
+    //let folder: PathBuf = PathBuf::from("roms/tests/tests-Jaczekanski/gpu/gp0-e1/");
+    let folder: PathBuf = PathBuf::from("roms/tests/tests/");
 
     let _ = eframe::run_native(
         "PS1 Emulator",
         options,
         Box::new(|cc| {
             Ok(Box::<MyApp>::new(MyApp::new(
-                cc,
-                folder,
-                true,
-                Some(/*0x800507B8 */ 0x80030000),
+                cc, folder, true, /*Some(/*0x800507B8 */ 0x80030000)*/ None,
             )))
         }),
     );

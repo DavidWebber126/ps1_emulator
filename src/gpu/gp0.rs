@@ -90,9 +90,6 @@ enum Gp0State {
         textured: bool,
         idx: u8,
     },
-    //ReceivingPolyVertShaded { size: u8, shaded: bool, textured: bool, idx: u8 },
-    //CpuBlitParams { idx: u8 },
-    //ReceivingParams { command: 4, idx: u8 },
 }
 
 pub struct Gp0 {
@@ -236,6 +233,23 @@ impl Gp0 {
 
     fn copy_vram(&mut self, source_addr: usize, dest_addr: usize) {
         self.vram[dest_addr] = self.vram[source_addr];
+    }
+
+    pub fn transparency_mode(&self) -> u32 {
+        match self.semitransparency {
+            SemiTransparency::Blend => 0,
+            SemiTransparency::Add => 1,
+            SemiTransparency::Subtract => 2,
+            SemiTransparency::QuarterBlend => 3,
+        }
+    }
+
+    pub fn texture_page_colors(&self) -> u32 {
+        match self.tex_page_colors {
+            TextureBits::Four => 0,
+            TextureBits::Eight => 1,
+            TextureBits::Fifteen => 2,
+        }
     }
 
     pub fn write(&mut self, val: u32) {

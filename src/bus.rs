@@ -3,6 +3,7 @@ use crate::cpu::ExceptionType;
 use crate::dma::{Dicr, Dma, SyncMode};
 use crate::gpu::Gpu;
 use crate::interrupts::Interrupt;
+use crate::mdec::Mdec;
 use crate::timer::Timer;
 
 use tracing::{Level, event};
@@ -19,6 +20,7 @@ pub struct Bus {
     pub timer1: Timer,
     pub timer2: Timer,
     pub gpu: Gpu,
+    pub mdec: Mdec,
     pub dma2: Dma,
     pub dma6: Dma,
     pub dpcr: u32,
@@ -39,6 +41,7 @@ impl Bus {
             timer1: Timer::new(),
             timer2: Timer::new(),
             gpu: Gpu::new(),
+            mdec: Mdec::new(),
             dma2: Dma::new(),
             dma6: Dma::new(),
             dpcr: 0x07654321,

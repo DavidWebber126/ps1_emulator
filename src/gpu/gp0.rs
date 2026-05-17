@@ -95,7 +95,7 @@ enum Gp0State {
 pub struct Gp0 {
     state: Gp0State,
     pub vram: Box<[Color; 524288]>, // 1024 x 512 grid of pixels
-    mask_field: [bool; 524288],     // 1024 x 512 simulate bit 16 mask field for each vram pixel
+    mask_field: Box<[bool; 524288]>,     // 1024 x 512 simulate bit 16 mask field for each vram pixel
     pub params: [u32; 16],
     //pub command_buffer: VecDeque<u32>, // Holds at most 16 words (i.e 16 u32s)
     pub tex_page_x: u8,
@@ -119,7 +119,7 @@ impl Gp0 {
         Self {
             state: Gp0State::WaitingForCommand,
             vram: Box::new([Color::from(0, 0, 0, 255); 524288]),
-            mask_field: [false; 524288],
+            mask_field: Box::new([false; 524288]),
             params: [0; 16],
             //command_buffer: VecDeque::with_capacity(16),
             tex_page_x: 0,

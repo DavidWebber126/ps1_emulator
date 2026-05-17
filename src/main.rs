@@ -28,7 +28,7 @@ fn main() {
         options,
         Box::new(|cc| {
             Ok(Box::<MyApp>::new(MyApp::new(
-                cc, folder, true, /*Some(/*0x800507B8 */ 0x80030000)*/ None,
+                cc, folder, true, Some(/*0x800507B8 */ 0x80030000),
             )))
         }),
     );

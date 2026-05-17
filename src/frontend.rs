@@ -82,10 +82,6 @@ impl eframe::App for MyApp {
                     tracing_setup::init_tracing();
                 }
 
-                // if self.logging_enabled {
-                //     event!(Level::TRACE, "In While Loop");
-                // }
-
                 self.cpu.step_instruction(self.tty_output);
             }
 
@@ -135,16 +131,6 @@ impl eframe::App for MyApp {
 
             let pixel_bytes = bytemuck::cast_slice(&(*self.cpu.bus.gpu.gp0.vram));
             self.screen_texture.set(
-                /*
-                egui::ColorImage {
-                    size: [1024, 512],
-                    source_size: egui::Vec2 {
-                        x: 1024.0,
-                        y: 512.0,
-                    },
-                    pixels: &self.cpu.bus.gpu.gp0.vram[0..524288],
-                },
-                */
                 egui::ColorImage::from_rgba_unmultiplied([1024, 512], pixel_bytes),
                 egui::TextureOptions::NEAREST,
             );
@@ -153,8 +139,6 @@ impl eframe::App for MyApp {
 
             let sized_texture =
                 egui::load::SizedTexture::new(self.screen_texture.id(), [1024.0, 512.0]);
-
-            // Render current frame
 
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.heading(RichText::new(format!("FPS is {}", self.fps)));

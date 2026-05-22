@@ -906,7 +906,7 @@ impl Bus {
                 Ok(())
             }
             0x1F801814 => {
-                self.gpu.gp1.write(val);
+                self.gpu.gp1_write(val);
                 Ok(())
             }
             _ => {

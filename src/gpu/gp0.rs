@@ -21,6 +21,7 @@ enum TextureBits {
     Four,
     Eight,
     Fifteen,
+    Reserved,
 }
 
 #[repr(C)]
@@ -94,8 +95,8 @@ enum Gp0State {
 
 pub struct Gp0 {
     state: Gp0State,
-    pub vram: Box<[Color; 524288]>, // 1024 x 512 grid of pixels
-    mask_field: Box<[bool; 524288]>,     // 1024 x 512 simulate bit 16 mask field for each vram pixel
+    pub vram: Box<[Color; 524288]>,  // 1024 x 512 grid of pixels
+    mask_field: Box<[bool; 524288]>, // 1024 x 512 simulate bit 16 mask field for each vram pixel
     pub params: [u32; 16],
     //pub command_buffer: VecDeque<u32>, // Holds at most 16 words (i.e 16 u32s)
     pub tex_page_x: u8,
@@ -104,6 +105,7 @@ pub struct Gp0 {
     tex_page_colors: TextureBits,
     pub dither_enabled: bool,
     pub draw_to_display: bool,
+    pub two_mb_mem: bool,
     pub rect_x_flip: bool,
     pub rect_y_flip: bool,
     pub texture_window: u32,
@@ -112,6 +114,7 @@ pub struct Gp0 {
     pub draw_offset: (i16, i16),
     pub mask_while_draw: bool,
     pub mask_before_draw: bool,
+    pub vram_copy_mode: bool,
 }
 
 impl Gp0 {
@@ -128,6 +131,7 @@ impl Gp0 {
             tex_page_colors: TextureBits::Four,
             dither_enabled: false,
             draw_to_display: false,
+            two_mb_mem: false,
             rect_x_flip: false,
             rect_y_flip: false,
             texture_window: 0,
@@ -136,10 +140,15 @@ impl Gp0 {
             draw_offset: (0, 0),
             mask_while_draw: false,
             mask_before_draw: false,
+            vram_copy_mode: false,
         }
     }
 
     pub fn vram_fill(&mut self, width: u32, height: u32, vram_x: u32, vram_y: u32, val: u16) {
+        // if !self.draw_to_display && self.in_draw_area(vram_x, vram_y) {
+        //     return
+        // }
+
         // RGB555
         let r = convert_5bit_to_8bit(val & 0x1F);
         let g = convert_5bit_to_8bit((val >> 5) & 0x1F);
@@ -149,16 +158,41 @@ impl Gp0 {
 
         for y in 0..height {
             for x in 0..width {
-                let vram_addr = (vram_x + x) as usize + 1024 * (vram_y + y) as usize;
+                let col = (vram_x + x) as usize % 1024;
+                let row = (vram_y + y) as usize % 512;
+                let vram_addr = 1024 * row + col;
                 self.vram[vram_addr] = color;
             }
         }
+    }
+
+    fn in_draw_area(&mut self, vram_x: u32, vram_y: u32) -> bool {
+        (self.draw_area_top_left.0..self.draw_area_bot_right.0).contains(&vram_x)
+            && (self.draw_area_top_left.1..self.draw_area_bot_right.1).contains(&vram_y)
+    }
+
+    fn write_vram_direct(&mut self, addr: usize, val: u32) {
+        if self.mask_before_draw && self.mask_field[addr] {
+            return;
+        }
+
+        let r = val & 0xFF;
+        let g = val & 0xFF;
+        let b = val & 0xFF;
+
+        self.mask_field[addr] = self.mask_while_draw || (val & 0x8000 > 0);
+
+        self.vram[addr] = Color::from(r as u8, g as u8, b as u8, 255);
     }
 
     fn write_5bit_color(&mut self, addr: usize, val: u16) {
         if self.mask_before_draw && self.mask_field[addr] {
             return;
         }
+
+        // if !self.draw_to_display && self.in_draw_area(addr as u32 % 1024, addr as u32 / 1024) {
+        //     return
+        // }
 
         // If Mask While Draw is set, then mask_field is forced to true. Otherwise set to bit 15
         self.mask_field[addr] = self.mask_while_draw || (val & 0x8000 > 0);
@@ -175,6 +209,10 @@ impl Gp0 {
         if self.mask_before_draw && self.mask_field[addr] {
             return;
         }
+
+        // if !self.draw_to_display && self.in_draw_area(addr as u32 % 1024, addr as u32 / 1024) {
+        //     return
+        // }
 
         // If Mask While Draw is set, then mask_field is forced to true. Otherwise set to bit 15
         self.mask_field[addr] = self.mask_while_draw || (val & 0x8000 > 0);
@@ -249,6 +287,7 @@ impl Gp0 {
             TextureBits::Four => 0,
             TextureBits::Eight => 1,
             TextureBits::Fifteen => 2,
+            TextureBits::Reserved => 3,
         }
     }
 
@@ -387,10 +426,12 @@ impl Gp0 {
                                 self.draw_to_display = val & 0x400 > 0;
                                 self.rect_x_flip = val & 0x1000 > 0;
                                 self.rect_y_flip = val & 0x2000 > 0;
+                                self.two_mb_mem = val & 0x800 > 0;
                                 match (val >> 7) & 0b11 {
                                     0 => self.tex_page_colors = TextureBits::Four,
                                     1 => self.tex_page_colors = TextureBits::Eight,
                                     2 => self.tex_page_colors = TextureBits::Fifteen,
+                                    3 => self.tex_page_colors = TextureBits::Reserved,
                                     _ => {
                                         event!(target: "ps1_emulator::GPU", Level::WARN, "Texture size outside of Four, Eight and Fifteen");
                                     }
@@ -818,21 +859,40 @@ impl Gp0 {
     fn cpu_to_vram_process(&mut self, word: u32, fields: &mut VramCopyFields) -> Gp0State {
         event!(target: "ps1_emulator::GPU", Level::TRACE, "CPU to VRAM Data");
 
-        for i in 0..2 {
-            let halfword = (word >> (16 * i)) as u16;
+        if self.vram_copy_mode {
             let vram_row = ((fields.vram_y + fields.current_row) & 0x1FF) as usize;
             let vram_col = ((fields.vram_x + fields.current_col) & 0x3FF) as usize;
 
             let vram_addr = 1024 * vram_row + vram_col;
-            self.write_5bit_color(vram_addr, halfword);
+            self.write_vram_direct(vram_addr, word);
 
-            fields.current_col += 1;
-            if fields.current_col == fields.width {
-                fields.current_col = 0;
-                fields.current_row += 1;
+            for _ in 0..2 {
+                if fields.current_col == fields.width {
+                    fields.current_col = 0;
+                    fields.current_row += 1;
 
-                if fields.current_row == fields.height {
-                    return Gp0State::WaitingForCommand;
+                    if fields.current_row == fields.height {
+                        return Gp0State::WaitingForCommand;
+                    }
+                }
+            }
+        } else {
+            for i in 0..2 {
+                let halfword = (word >> (16 * i)) as u16;
+                let vram_row = ((fields.vram_y + fields.current_row) & 0x1FF) as usize;
+                let vram_col = ((fields.vram_x + fields.current_col) & 0x3FF) as usize;
+
+                let vram_addr = 1024 * vram_row + vram_col;
+                self.write_5bit_color(vram_addr, halfword);
+
+                fields.current_col += 1;
+                if fields.current_col == fields.width {
+                    fields.current_col = 0;
+                    fields.current_row += 1;
+
+                    if fields.current_row == fields.height {
+                        return Gp0State::WaitingForCommand;
+                    }
                 }
             }
         }
@@ -1021,6 +1081,7 @@ impl Gp0 {
             0 => TextureBits::Four,
             1 => TextureBits::Eight,
             2 => TextureBits::Fifteen,
+            3 => TextureBits::Reserved,
             _ => {
                 event!(target: "ps1_emulator::GPU", Level::ERROR, "Texture size outside of Four, Eight and Fifteen");
                 panic!("Impossible")
@@ -1033,8 +1094,8 @@ impl Gp0 {
         for y in min.1..=max.1 {
             for x in min.0..=max.0 {
                 if let Some([a, b, c]) = inside_triange((x, y), v0, v1, v2) {
-                    let u = (a * uv0.0 as f32 + b * uv1.0 as f32 + c * uv2.0 as f32).round() as u32;
-                    let v = (a * uv0.1 as f32 + b * uv1.1 as f32 + c * uv2.1 as f32).round() as u32;
+                    let u = (a * uv0.0 as f32 + b * uv1.0 as f32 + c * uv2.0 as f32).trunc() as u32;
+                    let v = (a * uv0.1 as f32 + b * uv1.1 as f32 + c * uv2.1 as f32).trunc() as u32;
                     let pixel = self.get_color_from_uv(u, v, clut, tex_page, texture_bits);
 
                     if pixel == 0 {
@@ -1160,6 +1221,7 @@ impl Gp0 {
             0 => TextureBits::Four,
             1 => TextureBits::Eight,
             2 => TextureBits::Fifteen,
+            3 => TextureBits::Reserved,
             _ => {
                 event!(target: "ps1_emulator::GPU", Level::ERROR, "Texture size outside of Four, Eight and Fifteen");
                 panic!("Impossible")
@@ -1462,7 +1524,9 @@ impl Gp0 {
             TextureBits::Eight => {
                 self.get_texel_8bit(u, v, (clut.0, clut.1), (tex_page.0, tex_page.1))
             }
-            TextureBits::Fifteen => self.get_texel_15bit(u, v, (tex_page.0, tex_page.1)),
+            TextureBits::Fifteen | TextureBits::Reserved => {
+                self.get_texel_15bit(u, v, (tex_page.0, tex_page.1))
+            }
         }
     }
 

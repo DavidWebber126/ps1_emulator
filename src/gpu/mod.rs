@@ -23,6 +23,13 @@ impl Gpu {
         }
     }
 
+    pub fn gp1_write(&mut self, val: u32) {
+        self.gp1.write(val);
+        if self.gp1.vram_size {}
+
+        self.gp0.vram_copy_mode = self.gp1.display_mode & 0x10 > 0;
+    }
+
     pub fn gpuread(&mut self) -> u32 {
         event!(target: "ps1_emulator::GPU", Level::DEBUG, "Reading GPUREAD");
 
@@ -39,8 +46,6 @@ impl Gpu {
     }
 
     pub fn gpustat(&mut self) -> u32 {
-        event!(target: "ps1_emulator::GPU", Level::DEBUG, "Reading GPUSTAT");
-
         let command_ready = (self.gp0.ready_for_cmd() as u32) << 26;
         let vram_data_ready = (self.gp0.is_sending_data() as u32) << 27;
         let dma_ready = (self.gp0.dma_ready() as u32) << 28;
@@ -53,8 +58,9 @@ impl Gpu {
         let display_draw = (self.gp0.draw_to_display as u32) << 10;
         let force_mask_bit = (self.gp0.mask_while_draw as u32) << 11;
         let texture_mask = (self.gp0.mask_before_draw as u32) << 12;
+        let two_mb = (self.gp0.two_mb_mem as u32) << 15;
 
-        dma_ready
+        let output = dma_ready
             + vram_data_ready
             + command_ready
             + force_mask_bit
@@ -65,6 +71,11 @@ impl Gpu {
             + semitransparency
             + tex_page_y
             + tex_page_x
+            + two_mb;
+
+        event!(target: "ps1_emulator::GPU", Level::DEBUG, "Reading GPUSTAT: {:08X}", output);
+
+        output
     }
 
     pub fn tick(&mut self, cycles: u32) -> bool {

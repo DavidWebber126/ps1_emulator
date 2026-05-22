@@ -16,7 +16,7 @@ use std::path::PathBuf;
 
 fn main() {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([992.0, 558.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1040.0, 560.0]),
         ..Default::default()
     };
 
@@ -28,7 +28,10 @@ fn main() {
         options,
         Box::new(|cc| {
             Ok(Box::<MyApp>::new(MyApp::new(
-                cc, folder, true, Some(/*0x800507B8 */ 0x80030000),
+                cc,
+                folder,
+                true,
+                Some(/*0x800507B8*/ 0x8001166C),
             )))
         }),
     );

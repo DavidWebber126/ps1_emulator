@@ -9,6 +9,7 @@ pub struct Gp1 {
     pub horizon_range: (u16, u16),  // 12 bits each
     pub vertical_range: (u16, u16), // 10 bits each
     pub display_mode: u8,
+    pub color_depth: bool,
     pub gpu_read_register: u8,
     pub vram_size: bool,
 }
@@ -24,6 +25,7 @@ impl Gp1 {
             horizon_range: (0, 0),
             vertical_range: (0, 0),
             display_mode: 0,
+            color_depth: false,
             gpu_read_register: 0,
             vram_size: false,
         }
@@ -79,6 +81,7 @@ impl Gp1 {
             0x08 => {
                 // Display Mode
                 self.display_mode = (val & 0xFF) as u8;
+                self.color_depth = val & 0x10 > 0;
             }
             0x09 => {
                 // VRAM Size v2

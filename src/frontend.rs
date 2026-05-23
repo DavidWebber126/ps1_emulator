@@ -129,16 +129,25 @@ impl eframe::App for MyApp {
 
             self.frame_count += 1;
 
-            let pixel_bytes = bytemuck::cast_slice(&(*self.cpu.bus.gpu.gp0.vram));
-            self.screen_texture.set(
-                egui::ColorImage::from_rgba_unmultiplied([1024, 512], pixel_bytes),
-                egui::TextureOptions::NEAREST,
-            );
+            let vram_bytes = &self.cpu.bus.gpu.render_vram()[..];
+            let sized_texture = if self.cpu.bus.gpu.gp1.color_depth {
+                // VRAM in 24 bit mode.
+                self.screen_texture.set(
+                    egui::ColorImage::from_rgb([682, 512], vram_bytes),
+                    egui::TextureOptions::NEAREST,
+                );
+
+                egui::load::SizedTexture::new(self.screen_texture.id(), [682.0, 512.0])
+            } else {
+                self.screen_texture.set(
+                    egui::ColorImage::from_rgb([1024, 512], vram_bytes),
+                    egui::TextureOptions::NEAREST,
+                );
+
+                egui::load::SizedTexture::new(self.screen_texture.id(), [1024.0, 512.0])
+            };
 
             self.cpu.bus.gpu.frame_is_ready = false;
-
-            let sized_texture =
-                egui::load::SizedTexture::new(self.screen_texture.id(), [1024.0, 512.0]);
 
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.heading(RichText::new(format!("FPS is {}", self.fps)));

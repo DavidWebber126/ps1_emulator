@@ -2,6 +2,8 @@ use std::{cmp, mem};
 
 use tracing::{Level, event};
 
+use super::convert_5bit_to_8bit;
+
 const DITHER_TABLE: [[i8; 4]; 4] = [
     [-4, 0, -3, 1],
     [2, -2, 3, -1],
@@ -22,32 +24,6 @@ enum TextureBits {
     Eight,
     Fifteen,
     Reserved,
-}
-
-#[repr(C)]
-#[derive(Default, Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Color {
-    r: u8,
-    g: u8,
-    b: u8,
-    a: u8,
-}
-
-impl Color {
-    pub fn from(r: u8, g: u8, b: u8, a: u8) -> Self {
-        Self { r, g, b, a }
-    }
-
-    pub fn to_tuple(self) -> (u8, u8, u8, u8) {
-        (self.r, self.g, self.b, self.a)
-    }
-}
-
-impl From<u32> for Color {
-    fn from(value: u32) -> Self {
-        let [_, b, g, r] = value.to_le_bytes();
-        Color { r, g, b, a: 255 }
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -95,7 +71,7 @@ enum Gp0State {
 
 pub struct Gp0 {
     state: Gp0State,
-    pub vram: Box<[Color; 524288]>,  // 1024 x 512 grid of pixels
+    pub vram: Box<[u8; 1048576]>, // 1024 x 512 grid of pixels (lo, hi)
     mask_field: Box<[bool; 524288]>, // 1024 x 512 simulate bit 16 mask field for each vram pixel
     pub params: [u32; 16],
     //pub command_buffer: VecDeque<u32>, // Holds at most 16 words (i.e 16 u32s)
@@ -121,7 +97,7 @@ impl Gp0 {
     pub fn new() -> Self {
         Self {
             state: Gp0State::WaitingForCommand,
-            vram: Box::new([Color::from(0, 0, 0, 255); 524288]),
+            vram: Box::new([0; 1048576]),
             mask_field: Box::new([false; 524288]),
             params: [0; 16],
             //command_buffer: VecDeque::with_capacity(16),
@@ -149,40 +125,20 @@ impl Gp0 {
         //     return
         // }
 
-        // RGB555
-        let r = convert_5bit_to_8bit(val & 0x1F);
-        let g = convert_5bit_to_8bit((val >> 5) & 0x1F);
-        let b = convert_5bit_to_8bit((val >> 10) & 0x1F);
-
-        let color = Color::from(r, g, b, 255);
-
         for y in 0..height {
             for x in 0..width {
                 let col = (vram_x + x) as usize % 1024;
                 let row = (vram_y + y) as usize % 512;
-                let vram_addr = 1024 * row + col;
-                self.vram[vram_addr] = color;
+                let vram_addr = 2 * (1024 * row + col);
+                self.vram[vram_addr] = val as u8;
+                self.vram[vram_addr + 1] = (val >> 8) as u8;
             }
         }
     }
 
-    fn in_draw_area(&mut self, vram_x: u32, vram_y: u32) -> bool {
+    fn _in_draw_area(&mut self, vram_x: u32, vram_y: u32) -> bool {
         (self.draw_area_top_left.0..self.draw_area_bot_right.0).contains(&vram_x)
             && (self.draw_area_top_left.1..self.draw_area_bot_right.1).contains(&vram_y)
-    }
-
-    fn write_vram_direct(&mut self, addr: usize, val: u32) {
-        if self.mask_before_draw && self.mask_field[addr] {
-            return;
-        }
-
-        let r = val & 0xFF;
-        let g = val & 0xFF;
-        let b = val & 0xFF;
-
-        self.mask_field[addr] = self.mask_while_draw || (val & 0x8000 > 0);
-
-        self.vram[addr] = Color::from(r as u8, g as u8, b as u8, 255);
     }
 
     fn write_5bit_color(&mut self, addr: usize, val: u16) {
@@ -197,12 +153,8 @@ impl Gp0 {
         // If Mask While Draw is set, then mask_field is forced to true. Otherwise set to bit 15
         self.mask_field[addr] = self.mask_while_draw || (val & 0x8000 > 0);
 
-        // RGB555
-        let r = convert_5bit_to_8bit(val & 0x1F);
-        let g = convert_5bit_to_8bit((val >> 5) & 0x1F);
-        let b = convert_5bit_to_8bit((val >> 10) & 0x1F);
-
-        self.vram[addr] = Color::from(r, g, b, 255);
+        self.vram[2 * addr] = val as u8;
+        self.vram[2 * addr + 1] = (val >> 8) as u8;
     }
 
     fn write_5bit_color_alpha(&mut self, addr: usize, val: u16) {
@@ -221,35 +173,48 @@ impl Gp0 {
         let g = convert_5bit_to_8bit((val >> 5) & 0x1F);
         let b = convert_5bit_to_8bit((val >> 10) & 0x1F);
 
-        let prev_color = self.vram[addr];
+        let prev_color = u16::from_le_bytes([self.vram[2 * addr], self.vram[2 * addr + 1]]);
+        let prev_color_r = convert_5bit_to_8bit(prev_color & 0x1F);
+        let prev_color_g = convert_5bit_to_8bit((prev_color >> 5) & 0x1F);
+        let prev_color_b = convert_5bit_to_8bit((prev_color >> 10) & 0x1F);
 
         let (new_r, new_g, new_b) = match self.semitransparency {
             SemiTransparency::Blend => (
-                r / 2 + prev_color.r / 2,
-                g / 2 + prev_color.g / 2,
-                b / 2 + prev_color.b / 2,
+                r / 2 + prev_color_r / 2,
+                g / 2 + prev_color_g / 2,
+                b / 2 + prev_color_b / 2,
             ),
-            SemiTransparency::Add => (r + prev_color.r, g + prev_color.g, b + prev_color.b),
-            SemiTransparency::Subtract => (prev_color.r - r, prev_color.g - g, prev_color.b - b),
+            SemiTransparency::Add => (
+                (r + prev_color_r).clamp(0, 255),
+                (g + prev_color_g).clamp(0, 255),
+                (b + prev_color_b).clamp(0, 255),
+            ),
+            SemiTransparency::Subtract => (
+                (prev_color_r - r).clamp(0, 255),
+                (prev_color_g - g).clamp(0, 255),
+                (prev_color_b - b).clamp(0, 255),
+            ),
             SemiTransparency::QuarterBlend => (
-                r / 4 + prev_color.r,
-                g / 4 + prev_color.g,
-                b / 4 + prev_color.b,
+                r / 4 + prev_color_r,
+                g / 4 + prev_color_g,
+                b / 4 + prev_color_b,
             ),
         };
 
-        self.vram[addr] = Color::from(new_r, new_g, new_b, 255);
+        let new_r = new_r >> 3;
+        let new_g = new_g >> 3;
+        let new_b = new_b >> 3;
+
+        let new_color = (new_r as u16) | ((new_g as u16) << 5) | ((new_b as u16) << 10);
+        self.vram[2 * addr] = new_color as u8;
+        self.vram[2 * addr + 1] = (new_color >> 8) as u8;
     }
 
     pub fn read_vram(&self, addr: usize) -> u16 {
-        let (r, g, b, _) = self.vram[addr].to_tuple();
-        let new_r = convert_8bit_to_5bit(r);
-        let new_g = convert_8bit_to_5bit(g);
-        let new_b = convert_8bit_to_5bit(b);
+        let lo = self.vram[2 * addr];
+        let hi = self.vram[2 * addr + 1];
 
-        let mask = self.mask_field[addr] as u16;
-
-        new_r | (new_g << 5) | (new_b << 10) | (mask << 15)
+        u16::from_le_bytes([lo, hi])
     }
 
     fn modulate_5bit_color(&self, col1: u16, col2: u32) -> u16 {
@@ -270,7 +235,8 @@ impl Gp0 {
     }
 
     fn copy_vram(&mut self, source_addr: usize, dest_addr: usize) {
-        self.vram[dest_addr] = self.vram[source_addr];
+        self.vram[2 * dest_addr] = self.vram[2 * source_addr];
+        self.vram[2 * dest_addr + 1] = self.vram[2 * source_addr + 1];
     }
 
     pub fn transparency_mode(&self) -> u32 {
@@ -859,40 +825,21 @@ impl Gp0 {
     fn cpu_to_vram_process(&mut self, word: u32, fields: &mut VramCopyFields) -> Gp0State {
         event!(target: "ps1_emulator::GPU", Level::TRACE, "CPU to VRAM Data");
 
-        if self.vram_copy_mode {
+        for i in 0..2 {
+            let halfword = (word >> (16 * i)) as u16;
             let vram_row = ((fields.vram_y + fields.current_row) & 0x1FF) as usize;
             let vram_col = ((fields.vram_x + fields.current_col) & 0x3FF) as usize;
 
             let vram_addr = 1024 * vram_row + vram_col;
-            self.write_vram_direct(vram_addr, word);
+            self.write_5bit_color(vram_addr, halfword);
 
-            for _ in 0..2 {
-                if fields.current_col == fields.width {
-                    fields.current_col = 0;
-                    fields.current_row += 1;
+            fields.current_col += 1;
+            if fields.current_col == fields.width {
+                fields.current_col = 0;
+                fields.current_row += 1;
 
-                    if fields.current_row == fields.height {
-                        return Gp0State::WaitingForCommand;
-                    }
-                }
-            }
-        } else {
-            for i in 0..2 {
-                let halfword = (word >> (16 * i)) as u16;
-                let vram_row = ((fields.vram_y + fields.current_row) & 0x1FF) as usize;
-                let vram_col = ((fields.vram_x + fields.current_col) & 0x3FF) as usize;
-
-                let vram_addr = 1024 * vram_row + vram_col;
-                self.write_5bit_color(vram_addr, halfword);
-
-                fields.current_col += 1;
-                if fields.current_col == fields.width {
-                    fields.current_col = 0;
-                    fields.current_row += 1;
-
-                    if fields.current_row == fields.height {
-                        return Gp0State::WaitingForCommand;
-                    }
+                if fields.current_row == fields.height {
+                    return Gp0State::WaitingForCommand;
                 }
             }
         }
@@ -1253,7 +1200,7 @@ impl Gp0 {
                     };
                     let color = (r as u32) | ((g as u32) << 8) | ((b as u32) << 16);
 
-                    let pixel = self.modulate_5bit_color(pixel, color as u32);
+                    let pixel = self.modulate_5bit_color(pixel, color);
 
                     let vram_addr = 1024 * (y as usize) + x as usize;
                     if use_alpha {
@@ -1585,82 +1532,6 @@ fn dither(color: (u8, u8, u8), pixel: (u32, u32)) -> (u8, u8, u8) {
         color.1.saturating_add_signed(offset),
         color.2.saturating_add_signed(offset),
     )
-}
-
-fn convert_5bit_to_8bit(color: u16) -> u8 {
-    match color {
-        0 => 0,
-        1 => 8,
-        2 => 16,
-        3 => 25,
-        4 => 33,
-        5 => 41,
-        6 => 49,
-        7 => 58,
-        8 => 66,
-        9 => 74,
-        10 => 82,
-        11 => 90,
-        12 => 99,
-        13 => 107,
-        14 => 115,
-        15 => 123,
-        16 => 132,
-        17 => 140,
-        18 => 148,
-        19 => 156,
-        20 => 165,
-        21 => 173,
-        22 => 181,
-        23 => 189,
-        24 => 197,
-        25 => 206,
-        26 => 214,
-        27 => 222,
-        28 => 230,
-        29 => 239,
-        30 => 247,
-        31 => 255,
-        _ => panic!("Impossible"),
-    }
-}
-
-fn convert_8bit_to_5bit(color: u8) -> u16 {
-    match color {
-        0 => 0,
-        8 => 1,
-        16 => 2,
-        25 => 3,
-        33 => 4,
-        41 => 5,
-        49 => 6,
-        58 => 7,
-        66 => 8,
-        74 => 9,
-        82 => 10,
-        90 => 11,
-        99 => 12,
-        107 => 13,
-        115 => 14,
-        123 => 15,
-        132 => 16,
-        140 => 17,
-        148 => 18,
-        156 => 19,
-        165 => 20,
-        173 => 21,
-        181 => 22,
-        189 => 23,
-        197 => 24,
-        206 => 25,
-        214 => 26,
-        222 => 27,
-        230 => 28,
-        239 => 29,
-        247 => 30,
-        255 => 31,
-        _ => panic!("Impossible"),
-    }
 }
 
 fn param_limits(command: Commands) -> u8 {

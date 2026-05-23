@@ -90,4 +90,85 @@ impl Gpu {
         }
         self.frame_is_ready
     }
+
+    pub fn render_vram(&self) -> Vec<u8> {
+        if self.gp1.color_depth {
+            let mut output = Vec::with_capacity(349184);
+            for y in 0..512 {
+                for x in 0..682 {
+                    let base_addr = 2048 * y + 3 * x;
+                    let r = self.gp0.vram[base_addr];
+                    let g = self.gp0.vram[base_addr + 1];
+                    let b = self.gp0.vram[base_addr + 2];
+
+                    output.push(r);
+                    output.push(g);
+                    output.push(b);
+                }
+            }
+
+            output
+        } else {
+            let mut output = Vec::with_capacity(1572864);
+            for addr in 0..524288 {
+                let pixel =
+                    u16::from_le_bytes([self.gp0.vram[2 * addr], self.gp0.vram[2 * addr + 1]]);
+                let r = convert_5bit_to_8bit(pixel & 0x1F);
+                let g = convert_5bit_to_8bit((pixel >> 5) & 0x1F);
+                let b = convert_5bit_to_8bit((pixel >> 10) & 0x1F);
+
+                output.push(r);
+                output.push(g);
+                output.push(b);
+            }
+
+            output
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Default, Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Color {
+    r: u8,
+    g: u8,
+    b: u8,
+}
+
+fn convert_5bit_to_8bit(color: u16) -> u8 {
+    match color {
+        0 => 0,
+        1 => 8,
+        2 => 16,
+        3 => 25,
+        4 => 33,
+        5 => 41,
+        6 => 49,
+        7 => 58,
+        8 => 66,
+        9 => 74,
+        10 => 82,
+        11 => 90,
+        12 => 99,
+        13 => 107,
+        14 => 115,
+        15 => 123,
+        16 => 132,
+        17 => 140,
+        18 => 148,
+        19 => 156,
+        20 => 165,
+        21 => 173,
+        22 => 181,
+        23 => 189,
+        24 => 197,
+        25 => 206,
+        26 => 214,
+        27 => 222,
+        28 => 230,
+        29 => 239,
+        30 => 247,
+        31 => 255,
+        _ => panic!("Impossible"),
+    }
 }

@@ -20,7 +20,7 @@ fn main() {
         ..Default::default()
     };
 
-    //let folder: PathBuf = PathBuf::from("roms/tests/tests-Jaczekanski/gpu/gp0-e1/");
+    //let folder: PathBuf = PathBuf::from("roms/tests/tests-Jaczekanski/gpu/rectangles/");
     let folder: PathBuf = PathBuf::from("roms/tests/tests/");
 
     let _ = eframe::run_native(

@@ -3,6 +3,7 @@ use std::{cmp, mem};
 use tracing::{Level, event};
 
 use super::convert_5bit_to_8bit;
+use super::rasterize;
 
 const DITHER_TABLE: [[i8; 4]; 4] = [
     [-4, 0, -3, 1],
@@ -72,7 +73,6 @@ enum Gp0State {
 pub struct Gp0 {
     state: Gp0State,
     pub vram: Box<[u8; 1048576]>, // 1024 x 512 grid of pixels (lo, hi)
-    mask_field: Box<[bool; 524288]>, // 1024 x 512 simulate bit 16 mask field for each vram pixel
     pub params: [u32; 16],
     //pub command_buffer: VecDeque<u32>, // Holds at most 16 words (i.e 16 u32s)
     pub tex_page_x: u8,
@@ -90,7 +90,7 @@ pub struct Gp0 {
     pub draw_offset: (i16, i16),
     pub mask_while_draw: bool,
     pub mask_before_draw: bool,
-    pub vram_copy_mode: bool,
+    pub vram_size_set: bool,
 }
 
 impl Gp0 {
@@ -98,7 +98,6 @@ impl Gp0 {
         Self {
             state: Gp0State::WaitingForCommand,
             vram: Box::new([0; 1048576]),
-            mask_field: Box::new([false; 524288]),
             params: [0; 16],
             //command_buffer: VecDeque::with_capacity(16),
             tex_page_x: 0,
@@ -116,7 +115,7 @@ impl Gp0 {
             draw_offset: (0, 0),
             mask_while_draw: false,
             mask_before_draw: false,
-            vram_copy_mode: false,
+            vram_size_set: false,
         }
     }
 
@@ -142,7 +141,7 @@ impl Gp0 {
     }
 
     fn write_5bit_color(&mut self, addr: usize, val: u16) {
-        if self.mask_before_draw && self.mask_field[addr] {
+        if self.mask_before_draw && self.read_vram(addr) & 0x8000 > 0 {
             return;
         }
 
@@ -151,14 +150,14 @@ impl Gp0 {
         // }
 
         // If Mask While Draw is set, then mask_field is forced to true. Otherwise set to bit 15
-        self.mask_field[addr] = self.mask_while_draw || (val & 0x8000 > 0);
+        let mask_bit = self.mask_while_draw || (val & 0x8000 > 0);
 
         self.vram[2 * addr] = val as u8;
-        self.vram[2 * addr + 1] = (val >> 8) as u8;
+        self.vram[2 * addr + 1] = ((mask_bit as u8) << 7) | (val >> 8) as u8;
     }
 
     fn write_5bit_color_alpha(&mut self, addr: usize, val: u16) {
-        if self.mask_before_draw && self.mask_field[addr] {
+        if self.mask_before_draw && self.read_vram(addr) & 0x8000 > 0 {
             return;
         }
 
@@ -167,7 +166,7 @@ impl Gp0 {
         // }
 
         // If Mask While Draw is set, then mask_field is forced to true. Otherwise set to bit 15
-        self.mask_field[addr] = self.mask_while_draw || (val & 0x8000 > 0);
+        let mask_bit = self.mask_while_draw || (val & 0x8000 > 0);
 
         let r = convert_5bit_to_8bit(val & 0x1F);
         let g = convert_5bit_to_8bit((val >> 5) & 0x1F);
@@ -207,7 +206,7 @@ impl Gp0 {
 
         let new_color = (new_r as u16) | ((new_g as u16) << 5) | ((new_b as u16) << 10);
         self.vram[2 * addr] = new_color as u8;
-        self.vram[2 * addr + 1] = (new_color >> 8) as u8;
+        self.vram[2 * addr + 1] = ((mask_bit as u8) << 7) | (new_color >> 8) as u8;
     }
 
     pub fn read_vram(&self, addr: usize) -> u16 {
@@ -392,7 +391,11 @@ impl Gp0 {
                                 self.draw_to_display = val & 0x400 > 0;
                                 self.rect_x_flip = val & 0x1000 > 0;
                                 self.rect_y_flip = val & 0x2000 > 0;
-                                self.two_mb_mem = val & 0x800 > 0;
+                                if self.vram_size_set {
+                                    self.two_mb_mem = val & 0x800 > 0;
+                                } else {
+                                    self.two_mb_mem = false;
+                                }
                                 match (val >> 7) & 0b11 {
                                     0 => self.tex_page_colors = TextureBits::Four,
                                     1 => self.tex_page_colors = TextureBits::Eight,
@@ -561,17 +564,17 @@ impl Gp0 {
                     let mut index = 1 + shaded as usize;
                     let v0 = (
                         self.params[index] & 0x3FF,
-                        (self.params[index] >> 16) & 0x1FF,
+                        ((self.params[index] >> 16) & 0x3FF),
                     );
                     index += 1 + textured as usize + shaded as usize;
                     let v1 = (
                         self.params[index] & 0x3FF,
-                        (self.params[index] >> 16) & 0x1FF,
+                        ((self.params[index] >> 16) & 0x3FF),
                     );
                     index += 1 + textured as usize + shaded as usize;
                     let v2 = (
                         self.params[index] & 0x3FF,
-                        (self.params[index] >> 16) & 0x1FF,
+                        ((self.params[index] >> 16) & 0x3FF),
                     );
 
                     let (min, max) = self.get_bounds(v0, v1, v2);
@@ -594,9 +597,34 @@ impl Gp0 {
                             let clut = (clut_x as u16, clut_y as u16);
 
                             let tex_page = (t1 >> 16) & 0xFFFF;
+                            self.tex_page_x = (tex_page & 0xF) as u8;
+                            self.tex_page_y = tex_page & 0x10 > 0;
+
+                            match (tex_page >> 7) & 0b11 {
+                                0 => self.tex_page_colors = TextureBits::Four,
+                                1 => self.tex_page_colors = TextureBits::Eight,
+                                2 => self.tex_page_colors = TextureBits::Fifteen,
+                                3 => self.tex_page_colors = TextureBits::Reserved,
+                                _ => {
+                                    event!(target: "ps1_emulator::GPU", Level::WARN, "Texture size outside of Four, Eight and Fifteen");
+                                }
+                            }
+                            match (tex_page >> 5) & 0b11 {
+                                0 => self.semitransparency = SemiTransparency::Blend,
+                                1 => self.semitransparency = SemiTransparency::Add,
+                                2 => self.semitransparency = SemiTransparency::Subtract,
+                                3 => self.semitransparency = SemiTransparency::QuarterBlend,
+                                _ => panic!("Impossible"),
+                            }
+
+                            if self.vram_size_set {
+                                self.two_mb_mem = tex_page & 0x800 > 0;
+                            } else {
+                                self.two_mb_mem = false;
+                            }
 
                             self.rasterize_triangle_textured(
-                                v0, v1, v2, uv0, uv1, uv2, tex_page, clut, min, max,
+                                v0, v1, v2, uv0, uv1, uv2, clut, min, max,
                             );
                         }
                         (true, false) => {
@@ -623,9 +651,34 @@ impl Gp0 {
                             let clut = (clut_x as u16, clut_y as u16);
 
                             let tex_page = (t1 >> 16) & 0xFFFF;
+                            self.tex_page_x = (tex_page & 0xF) as u8;
+                            self.tex_page_y = tex_page & 0x10 > 0;
+
+                            match (tex_page >> 7) & 0b11 {
+                                0 => self.tex_page_colors = TextureBits::Four,
+                                1 => self.tex_page_colors = TextureBits::Eight,
+                                2 => self.tex_page_colors = TextureBits::Fifteen,
+                                3 => self.tex_page_colors = TextureBits::Reserved,
+                                _ => {
+                                    event!(target: "ps1_emulator::GPU", Level::WARN, "Texture size outside of Four, Eight and Fifteen");
+                                }
+                            }
+                            match (tex_page >> 5) & 0b11 {
+                                0 => self.semitransparency = SemiTransparency::Blend,
+                                1 => self.semitransparency = SemiTransparency::Add,
+                                2 => self.semitransparency = SemiTransparency::Subtract,
+                                3 => self.semitransparency = SemiTransparency::QuarterBlend,
+                                _ => panic!("Impossible"),
+                            }
+
+                            if self.vram_size_set {
+                                self.two_mb_mem = tex_page & 0x800 > 0;
+                            } else {
+                                self.two_mb_mem = false;
+                            }
 
                             self.rasterize_triangle_textured_and_shaded(
-                                v0, v1, v2, uv0, uv1, uv2, c0, c1, c2, tex_page, clut, min, max,
+                                v0, v1, v2, uv0, uv1, uv2, c0, c1, c2, clut, min, max,
                             );
                         }
                     }
@@ -634,7 +687,7 @@ impl Gp0 {
                         index += 1 + textured as usize + shaded as usize;
                         let v3 = (
                             self.params[index] & 0x3FF,
-                            (self.params[index] >> 16) & 0x1FF,
+                            ((self.params[index] >> 16) & 0x3FF),
                         );
 
                         let (min, max) = self.get_bounds(v1, v2, v3);
@@ -655,10 +708,9 @@ impl Gp0 {
                                 let clut_x = 16 * ((self.params[2] >> 16) & 0x3F);
                                 let clut_y = (self.params[2] >> 22) & 0x1FF;
                                 let clut = (clut_x as u16, clut_y as u16);
-                                let tex_page = (t1 >> 16) & 0xFFFF;
 
                                 self.rasterize_triangle_textured(
-                                    v1, v2, v3, uv1, uv2, uv3, tex_page, clut, min, max,
+                                    v1, v2, v3, uv1, uv2, uv3, clut, min, max,
                                 );
                             }
                             (true, false) => {
@@ -683,10 +735,9 @@ impl Gp0 {
                                 let clut_x = 16 * ((self.params[3] >> 16) & 0x3F);
                                 let clut_y = (self.params[3] >> 22) & 0x1FF;
                                 let clut = (clut_x as u16, clut_y as u16);
-                                let tex_page = (t1 >> 16) & 0xFFFF;
 
                                 self.rasterize_triangle_textured_and_shaded(
-                                    v1, v2, v3, uv1, uv2, uv3, c1, c2, c3, tex_page, clut, min, max,
+                                    v1, v2, v3, uv1, uv2, uv3, c1, c2, c3, clut, min, max,
                                 );
                             }
                         }
@@ -971,7 +1022,7 @@ impl Gp0 {
             return;
         }
 
-        if cross_product(v0, v1, v2) < 0 {
+        if rasterize::cross_product(v0, v1, v2) < 0 {
             mem::swap(&mut v0, &mut v1);
         }
 
@@ -987,7 +1038,7 @@ impl Gp0 {
 
         for y in min.1..=max.1 {
             for x in min.0..=max.0 {
-                if inside_triange((x, y), v0, v1, v2).is_some() {
+                if rasterize::inside_triange((x, y), v0, v1, v2).is_some() {
                     let vram_addr = 1024 * (y as usize) + x as usize;
                     if use_alpha {
                         self.write_5bit_color_alpha(vram_addr, pixel);
@@ -1007,7 +1058,6 @@ impl Gp0 {
         mut uv0: (u32, u32),
         mut uv1: (u32, u32),
         uv2: (u32, u32),
-        tex_page: u32,
         clut: (u16, u16),
         min: (u32, u32),
         max: (u32, u32),
@@ -1016,34 +1066,21 @@ impl Gp0 {
             return;
         }
 
-        if cross_product(v0, v1, v2) < 0 {
+        if rasterize::cross_product(v0, v1, v2) < 0 {
             mem::swap(&mut v0, &mut v1);
             mem::swap(&mut uv0, &mut uv1);
         }
 
         let use_alpha = (self.params[0] >> 25) & 0x1 > 0;
         let use_modulation = self.params[0] & 0x1000000 == 0;
-
-        let texture_bits = match (tex_page >> 7) & 0b11 {
-            0 => TextureBits::Four,
-            1 => TextureBits::Eight,
-            2 => TextureBits::Fifteen,
-            3 => TextureBits::Reserved,
-            _ => {
-                event!(target: "ps1_emulator::GPU", Level::ERROR, "Texture size outside of Four, Eight and Fifteen");
-                panic!("Impossible")
-            }
-        };
-        let tex_page_x = 64 * (tex_page & 0xF);
-        let tex_page_y = 256 * ((tex_page >> 4) & 0x1);
-        let tex_page = (tex_page_x as u16, tex_page_y as u16);
+        let tex_page = (64 * self.tex_page_x as u16, 256 * self.tex_page_y as u16);
 
         for y in min.1..=max.1 {
             for x in min.0..=max.0 {
-                if let Some([a, b, c]) = inside_triange((x, y), v0, v1, v2) {
-                    let u = (a * uv0.0 as f32 + b * uv1.0 as f32 + c * uv2.0 as f32).trunc() as u32;
-                    let v = (a * uv0.1 as f32 + b * uv1.1 as f32 + c * uv2.1 as f32).trunc() as u32;
-                    let pixel = self.get_color_from_uv(u, v, clut, tex_page, texture_bits);
+                if let Some([a, b, c]) = rasterize::inside_triange((x, y), v0, v1, v2) {
+                    let u = (a * uv0.0 as f32 + b * uv1.0 as f32 + c * uv2.0 as f32).round() as u32;
+                    let v = (a * uv0.1 as f32 + b * uv1.1 as f32 + c * uv2.1 as f32).round() as u32;
+                    let pixel = self.get_color_from_uv(u, v, clut, tex_page, self.tex_page_colors);
 
                     if pixel == 0 {
                         continue;
@@ -1082,7 +1119,7 @@ impl Gp0 {
             return;
         }
 
-        if cross_product(v0, v1, v2) < 0 {
+        if rasterize::cross_product(v0, v1, v2) < 0 {
             mem::swap(&mut v0, &mut v1);
             mem::swap(&mut c0, &mut c1);
         }
@@ -1101,7 +1138,7 @@ impl Gp0 {
 
         for y in min.1..=max.1 {
             for x in min.0..=max.0 {
-                if let Some([a, b, c]) = inside_triange((x, y), v0, v1, v2) {
+                if let Some([a, b, c]) = rasterize::inside_triange((x, y), v0, v1, v2) {
                     let r = (a * r0 as f32 + b * r1 as f32 + c * r2 as f32).round() as u8;
                     let g = (a * g0 as f32 + b * g1 as f32 + c * g2 as f32).round() as u8;
                     let b = (a * b0 as f32 + b * b1 as f32 + c * b2 as f32).round() as u8;
@@ -1137,7 +1174,6 @@ impl Gp0 {
         mut c0: u32,
         mut c1: u32,
         c2: u32,
-        tex_page: u32,
         clut: (u16, u16),
         min: (u32, u32),
         max: (u32, u32),
@@ -1146,7 +1182,7 @@ impl Gp0 {
             return;
         }
 
-        if cross_product(v0, v1, v2) < 0 {
+        if rasterize::cross_product(v0, v1, v2) < 0 {
             mem::swap(&mut v0, &mut v1);
             mem::swap(&mut uv0, &mut uv1);
             mem::swap(&mut c0, &mut c1);
@@ -1163,27 +1199,14 @@ impl Gp0 {
         let b2 = (c2 >> 16) & 0xFF;
 
         let use_alpha = (self.params[0] >> 25) & 0x1 > 0;
-
-        let texture_bits = match (tex_page >> 7) & 0b11 {
-            0 => TextureBits::Four,
-            1 => TextureBits::Eight,
-            2 => TextureBits::Fifteen,
-            3 => TextureBits::Reserved,
-            _ => {
-                event!(target: "ps1_emulator::GPU", Level::ERROR, "Texture size outside of Four, Eight and Fifteen");
-                panic!("Impossible")
-            }
-        };
-        let tex_page_x = 64 * (tex_page & 0xF);
-        let tex_page_y = 256 * ((tex_page >> 4) & 0x1);
-        let tex_page = (tex_page_x as u16, tex_page_y as u16);
+        let tex_page = (64 * self.tex_page_x as u16, 256 * self.tex_page_y as u16);
 
         for y in min.1..=max.1 {
             for x in min.0..=max.0 {
-                if let Some([a, b, c]) = inside_triange((x, y), v0, v1, v2) {
+                if let Some([a, b, c]) = rasterize::inside_triange((x, y), v0, v1, v2) {
                     let u = (a * uv0.0 as f32 + b * uv1.0 as f32 + c * uv2.0 as f32).round() as u32;
                     let v = (a * uv0.1 as f32 + b * uv1.1 as f32 + c * uv2.1 as f32).round() as u32;
-                    let pixel = self.get_color_from_uv(u, v, clut, tex_page, texture_bits);
+                    let pixel = self.get_color_from_uv(u, v, clut, tex_page, self.tex_page_colors);
 
                     if pixel == 0 {
                         continue;
@@ -1348,15 +1371,15 @@ impl Gp0 {
                     && (self.draw_area_top_left.1..self.draw_area_bot_right.1).contains(&vram_row)
                 {
                     let u = if self.rect_x_flip {
-                        u_offset - x
+                        u_offset.wrapping_sub(x) + 1
                     } else {
-                        x + u_offset
-                    };
+                        u_offset.wrapping_add(x)
+                    } % 256;
                     let v = if self.rect_y_flip {
-                        v_offset - y
+                        v_offset.wrapping_sub(y) + 1
                     } else {
-                        y + v_offset
-                    };
+                        v_offset.wrapping_add(y)
+                    } % 256;
 
                     let pixel = self.get_color_from_uv(
                         u,
@@ -1444,7 +1467,9 @@ impl Gp0 {
     }
 
     fn get_texel_15bit(&self, x: u32, y: u32, tex_page: (u16, u16)) -> u16 {
-        let tex_addr = x as usize + tex_page.0 as usize + 1024 * (y as usize + tex_page.1 as usize);
+        let vram_x = (x as usize + tex_page.0 as usize) % 1024;
+        let vram_y = (y as usize + tex_page.1 as usize) % 512;
+        let tex_addr = vram_x + 1024 * vram_y;
         self.read_vram(tex_addr)
     }
 
@@ -1480,47 +1505,6 @@ impl Gp0 {
     pub fn is_sending_data(&self) -> bool {
         matches!(self.state, Gp0State::SendingData(_))
     }
-}
-
-// Cross product of (v1 - v0) and (v2 - v0)
-fn cross_product(v0: (u32, u32), v1: (u32, u32), v2: (u32, u32)) -> i32 {
-    (v1.0 as i32 - v0.0 as i32) * (v2.1 as i32 - v0.1 as i32)
-        - (v1.1 as i32 - v0.1 as i32) * (v2.0 as i32 - v0.0 as i32)
-}
-
-fn inside_triange(
-    p: (u32, u32),
-    v0: (u32, u32),
-    v1: (u32, u32),
-    v2: (u32, u32),
-) -> Option<[f32; 3]> {
-    let mut barycentric_coords = [0.0; 3];
-
-    let denominator = cross_product(v0, v1, v2) as f32;
-    if denominator == 0.0 {
-        return Some([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0]);
-    }
-
-    for (i, (a, b)) in [(v1, v2), (v2, v0), (v0, v1)].iter().enumerate() {
-        let cross_product = cross_product(*a, *b, p);
-        barycentric_coords[i] = (cross_product as f32) / denominator;
-
-        if cross_product < 0 {
-            return None;
-        }
-
-        if cross_product == 0 {
-            if b.1 > a.1 {
-                return None;
-            }
-
-            if b.1 == a.1 && b.0 < a.0 {
-                return None;
-            }
-        }
-    }
-
-    Some(barycentric_coords)
 }
 
 // Color is in rgb

@@ -1,5 +1,6 @@
 mod gp0;
 mod gp1;
+mod rasterize;
 
 use gp0::Gp0;
 use gp1::Gp1;
@@ -25,9 +26,7 @@ impl Gpu {
 
     pub fn gp1_write(&mut self, val: u32) {
         self.gp1.write(val);
-        if self.gp1.vram_size {}
-
-        self.gp0.vram_copy_mode = self.gp1.display_mode & 0x10 > 0;
+        self.gp0.vram_size_set = self.gp1.vram_size;
     }
 
     pub fn gpuread(&mut self) -> u32 {

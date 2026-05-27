@@ -20,8 +20,8 @@ fn main() {
         ..Default::default()
     };
 
-    //let folder: PathBuf = PathBuf::from("roms/tests/tests-Jaczekanski/gpu/rectangles/");
-    let folder: PathBuf = PathBuf::from("roms/tests/tests/");
+    let folder: PathBuf = PathBuf::from("roms/tests/tests-Jaczekanski/gpu/animated-triangle/");
+    //let folder: PathBuf = PathBuf::from("roms/tests/tests/");
 
     let _ = eframe::run_native(
         "PS1 Emulator",
@@ -31,7 +31,7 @@ fn main() {
                 cc,
                 folder,
                 true,
-                Some(/*0x800507B8*/ 0x8001166C),
+                Some(/*0x800507B8*/ 0x80010FDC),
             )))
         }),
     );

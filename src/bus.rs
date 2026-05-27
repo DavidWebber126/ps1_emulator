@@ -765,17 +765,17 @@ impl Bus {
         match addr {
             // DMA 2 - GPU
             0x1F8010A0 => {
-                event!(target: "ps1_emulator::BUS", Level::TRACE, "DMA 2 MADR write {:08X}", val);
+                event!(target: "ps1_emulator::DMA", Level::TRACE, "DMA 2 MADR write {:08X}", val);
                 self.dma2.madr_write(val);
                 Ok(())
             }
             0x1F8010A4 => {
-                event!(target: "ps1_emulator::BUS", Level::TRACE, "DMA 2 BCH write {:08X}", val);
+                event!(target: "ps1_emulator::DMA", Level::TRACE, "DMA 2 BCH write {:08X}", val);
                 self.dma2.block_control_write(val);
                 Ok(())
             }
             0x1F8010A8 => {
-                event!(target: "ps1_emulator::BUS", Level::TRACE, "DMA 2 CHCR write {:08X}", val);
+                event!(target: "ps1_emulator::DMA", Level::TRACE, "DMA 2 CHCR write {:08X}", val);
                 if self.dma2.channel_control_write(val) {
                     let mut address = self.dma2.madr_read();
                     self.dma2.start_dma();
@@ -841,17 +841,17 @@ impl Bus {
             }
             // DMA 6 - OTC
             0x1F8010E0 => {
-                event!(target: "ps1_emulator::BUS", Level::TRACE, "DMA 6 MADR write {:08X}", val);
+                event!(target: "ps1_emulator::DMA", Level::TRACE, "DMA 6 MADR write {:08X}", val);
                 self.dma6.madr_write(val);
                 Ok(())
             }
             0x1F8010E4 => {
-                event!(target: "ps1_emulator::BUS", Level::TRACE, "DMA 6 BCR write {:08X}", val);
+                event!(target: "ps1_emulator::DMA", Level::TRACE, "DMA 6 BCR write {:08X}", val);
                 self.dma6.block_control_write(val);
                 Ok(())
             }
             0x1F8010E8 => {
-                event!(target: "ps1_emulator::BUS", Level::TRACE, "DMA 6 CHCR write {:08X}", val);
+                event!(target: "ps1_emulator::DMA", Level::TRACE, "DMA 6 CHCR write {:08X}", val);
                 if self.dma6.channel_control_write(val) {
                     self.dma6.start_dma();
                     let mut address = self.dma6.madr_read();
@@ -889,7 +889,7 @@ impl Bus {
             }
             // DPCR - DMA Control Register
             0x1F8010F0 => {
-                event!(target: "ps1_emulator::BUS", Level::TRACE, "DPCR DMA Write {:08X}", val);
+                event!(target: "ps1_emulator::DMA", Level::TRACE, "DPCR DMA Write {:08X}", val);
                 self.dma2.enabled = val & 0x800 > 0;
                 self.dma6.enabled = val & 0x8000000 > 0;
                 self.dpcr = val;
@@ -897,7 +897,7 @@ impl Bus {
             }
             // DICR - DMA Interrupt Register
             0x1F8010F4 => {
-                event!(target: "ps1_emulator::BUS", Level::TRACE, "DICR DMA Unimplemented {:08X}", val);
+                event!(target: "ps1_emulator::DMA", Level::TRACE, "DICR DMA Unimplemented {:08X}", val);
                 self.dicr.write(val);
                 Ok(())
             }

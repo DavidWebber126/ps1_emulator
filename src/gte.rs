@@ -29,7 +29,8 @@ pub struct Gte {
     h: u16,
     depth_cue_a: i16,
     depth_cue_b: i32,
-    average_z: [i16; 2],
+    zsf3: i16,
+    zsf4: i16,
     flag: u32,
 }
 
@@ -62,7 +63,8 @@ impl Gte {
             h: 0,
             depth_cue_a: 0,
             depth_cue_b: 0,
-            average_z: [0; 2],
+            zsf3: 0,
+            zsf4: 0,
             flag: 0,
         }
     }
@@ -70,26 +72,34 @@ impl Gte {
     pub fn control_reg_read(&self, reg: u32) -> u32 {
         if self.enabled {
             match reg {
-                0 => (self.rotation_matrix[0][0] as u32) << 16 + self.rotation_matrix[0][1] as u32,
-                1 => (self.rotation_matrix[0][2] as u32) << 16 + self.rotation_matrix[1][0] as u32,
-                2 => (self.rotation_matrix[1][1] as u32) << 16 + self.rotation_matrix[1][2] as u32,
-                3 => (self.rotation_matrix[2][0] as u32) << 16 + self.rotation_matrix[2][1] as u32,
+                0 => {
+                    ((self.rotation_matrix[0][0] as u32) << 16) + self.rotation_matrix[0][1] as u32
+                }
+                1 => {
+                    ((self.rotation_matrix[0][2] as u32) << 16) + self.rotation_matrix[1][0] as u32
+                }
+                2 => {
+                    ((self.rotation_matrix[1][1] as u32) << 16) + self.rotation_matrix[1][2] as u32
+                }
+                3 => {
+                    ((self.rotation_matrix[2][0] as u32) << 16) + self.rotation_matrix[2][1] as u32
+                }
                 4 => (self.rotation_matrix[2][2] as i32) as u32,
                 5 => self.translation_vec[0] as u32,
                 6 => self.translation_vec[1] as u32,
                 7 => self.translation_vec[2] as u32,
-                8 => (self.light_matrix[0][0] as u32) << 16 + self.light_matrix[0][1] as u32,
-                9 => (self.light_matrix[0][2] as u32) << 16 + self.light_matrix[1][0] as u32,
-                10 => (self.light_matrix[1][1] as u32) << 16 + self.light_matrix[1][2] as u32,
-                11 => (self.light_matrix[2][0] as u32) << 16 + self.light_matrix[2][1] as u32,
+                8 => ((self.light_matrix[0][0] as u32) << 16) + self.light_matrix[0][1] as u32,
+                9 => ((self.light_matrix[0][2] as u32) << 16) + self.light_matrix[1][0] as u32,
+                10 => ((self.light_matrix[1][1] as u32) << 16) + self.light_matrix[1][2] as u32,
+                11 => ((self.light_matrix[2][0] as u32) << 16) + self.light_matrix[2][1] as u32,
                 12 => (self.light_matrix[2][2] as i32) as u32,
                 13 => self.background_color[0] as u32,
                 14 => self.background_color[1] as u32,
                 15 => self.background_color[2] as u32,
-                16 => (self.light_matrix[0][0] as u32) << 16 + self.light_matrix[0][1] as u32,
-                17 => (self.light_matrix[0][2] as u32) << 16 + self.light_matrix[1][0] as u32,
-                18 => (self.light_matrix[1][1] as u32) << 16 + self.light_matrix[1][2] as u32,
-                19 => (self.light_matrix[2][0] as u32) << 16 + self.light_matrix[2][1] as u32,
+                16 => ((self.light_matrix[0][0] as u32) << 16) + self.light_matrix[0][1] as u32,
+                17 => ((self.light_matrix[0][2] as u32) << 16) + self.light_matrix[1][0] as u32,
+                18 => ((self.light_matrix[1][1] as u32) << 16) + self.light_matrix[1][2] as u32,
+                19 => ((self.light_matrix[2][0] as u32) << 16) + self.light_matrix[2][1] as u32,
                 20 => (self.light_matrix[2][2] as i32) as u32,
                 21 => self.far_color[0] as u32,
                 22 => self.far_color[1] as u32,
@@ -99,8 +109,8 @@ impl Gte {
                 26 => self.h as u32,
                 27 => self.depth_cue_a as u32,
                 28 => self.depth_cue_b as u32,
-                29 => self.average_z[0] as u32,
-                30 => self.average_z[1] as u32,
+                29 => self.zsf3 as u32,
+                30 => self.zsf4 as u32,
                 31 => self.flag,
                 _ => panic!("Impossible GTE Control Register"),
             }
@@ -177,8 +187,8 @@ impl Gte {
                 26 => self.h = (val & 0xFFFF) as u16,
                 27 => self.depth_cue_a = (val & 0xFFFF) as i16,
                 28 => self.depth_cue_b = val as i32,
-                29 => self.average_z[0] = (val & 0xFFFF) as i16,
-                30 => self.average_z[1] = (val & 0xFFFF) as i16,
+                29 => self.zsf3 = (val & 0xFFFF) as i16,
+                30 => self.zsf4 = (val & 0xFFFF) as i16,
                 31 => self.flag = val,
                 _ => panic!("Impossible GTE Control Register"),
             }
@@ -188,11 +198,11 @@ impl Gte {
     pub fn data_reg_read(&self, reg: u32) -> u32 {
         if self.enabled {
             match reg {
-                0 => (self.v0[1] as u32) << 16 + self.v0[0] as u32,
+                0 => ((self.v0[1] as u32) << 16) + self.v0[0] as u32,
                 1 => self.v0[2] as u32,
-                2 => (self.v1[1] as u32) << 16 + self.v1[0] as u32,
+                2 => ((self.v1[1] as u32) << 16) + self.v1[0] as u32,
                 3 => self.v1[2] as u32,
-                4 => (self.v2[1] as u32) << 16 + self.v2[0] as u32,
+                4 => ((self.v2[1] as u32) << 16) + self.v2[0] as u32,
                 5 => self.v2[2] as u32,
                 6 => self.rgb,
                 7 => self.otz as u32,
@@ -200,10 +210,10 @@ impl Gte {
                 9 => self.intermediates[1] as u32,
                 10 => self.intermediates[2] as u32,
                 11 => self.intermediates[3] as u32,
-                12 => (self.screenxy[0][0] as u32) << 16 + self.screenxy[0][1] as u32,
-                13 => (self.screenxy[1][0] as u32) << 16 + self.screenxy[1][1] as u32,
-                14 => (self.screenxy[2][0] as u32) << 16 + self.screenxy[2][1] as u32,
-                15 => (self.screenxy[3][0] as u32) << 16 + self.screenxy[3][1] as u32,
+                12 => ((self.screenxy[0][0] as u32) << 16) + self.screenxy[0][1] as u32,
+                13 => ((self.screenxy[1][0] as u32) << 16) + self.screenxy[1][1] as u32,
+                14 => ((self.screenxy[2][0] as u32) << 16) + self.screenxy[2][1] as u32,
+                15 => ((self.screenxy[3][0] as u32) << 16) + self.screenxy[3][1] as u32,
                 16 => self.screenz[0] as u32,
                 17 => self.screenz[1] as u32,
                 18 => self.screenz[2] as u32,
@@ -300,14 +310,22 @@ impl Gte {
             }
             0x06 => {
                 // Normal Clipping
-                todo!()
+                self.nclip();
             }
             0x30 => {
                 // Perspective Transformation Triple: RTPT
                 self.rtpt();
             }
+            0x2D => {
+                // AVSZ3 - Average of three Z values
+                self.avsz3();
+            }
+            0x2E => {
+                // AVSZ4 - Average of four Z values
+                self.avsz4();
+            }
             _ => {
-                event!(target: "ps1_emulator::GTE", Level::ERROR, "No GTE command for {:02X}", cmd & 0x1F);
+                event!(target: "ps1_emulator::GTE", Level::ERROR, "No GTE command for 0x{:02X}", cmd & 0x1F);
             }
         }
     }
@@ -400,26 +418,36 @@ impl Gte {
 
         self.intermediates[0] = self.mac[0] as i16 / 0x1000;
     }
+
+    fn nclip(&mut self) {
+        // MAC0 =   SX0*SY1 + SX1*SY2 + SX2*SY0 - SX0*SY2 - SX1*SY0 - SX2*SY1
+        self.mac[0] = self.screenxy[0][0] as i32 * self.screenxy[1][1] as i32
+            + self.screenxy[1][0] as i32 * self.screenxy[2][1] as i32
+            + self.screenxy[2][0] as i32 * self.screenxy[0][1] as i32
+            - self.screenxy[0][0] as i32 * self.screenxy[2][1] as i32
+            - self.screenxy[1][0] as i32 * self.screenxy[0][1] as i32
+            - self.screenxy[2][0] as i32 * self.screenxy[1][1] as i32;
+    }
+
+    fn avsz3(&mut self) {
+        // MAC0 = ZSF3*(SZ1+SZ2+SZ3) 
+        // OTZ  = MAC0/1000h
+        let sum = self.screenz[1] + self.screenz[2] + self.screenz[3];
+        self.mac[0] = multiply_fixed_point(self.zsf3, sum as i16) as i32;
+        self.otz = (self.mac[0] / 0x1000) as u16;
+    }
+
+    fn avsz4(&mut self) {
+        // MAC0 = ZSF4*(SZ0+SZ1+SZ2+SZ3) 
+        // OTZ  = MAC0/1000h
+        let sum = self.screenz[0] + self.screenz[1] + self.screenz[2] + self.screenz[3];
+        self.mac[0] = multiply_fixed_point(self.zsf4, sum as i16) as i32;
+        self.otz = (self.mac[0] / 0x1000) as u16;
+    }
 }
 
 fn multiply_fixed_point(arg1: i16, arg2: i16) -> i16 {
     let arg1 = arg1 as i32;
     let arg2 = arg2 as i32;
-    let product = ((arg1 * arg2) >> 12) as i16;
-    product
-}
-
-fn add_fixed_point(arg1: u16, arg2: u16) -> u16 {
-    let sign1 = arg1 & 0x8000 > 0;
-    let sign2 = arg2 & 0x8000 > 0;
-    let arg1 = (arg1 & 0x7FFF) as u32;
-    let arg2 = (arg2 & 0x7FFF) as u32;
-    let (sum, sign) = match (sign1, sign2) {
-        (false, false) => (arg1.wrapping_add(arg2), false),
-        (true, true) => (arg1.wrapping_add(arg2), true),
-        (true, false) => (arg1.wrapping_sub(arg2), arg1 > arg2),
-        (false, true) => (arg2.wrapping_sub(arg1), arg2 > arg1),
-    };
-
-    ((sign as u16) << 15) | (sum as u16)
+    ((arg1 * arg2) >> 12) as i16
 }

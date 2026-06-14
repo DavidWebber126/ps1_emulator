@@ -220,7 +220,6 @@ impl Cpu {
 
         // Check for interrupts
         // Set cause bit (or clear it) if a hardware interrupt is ready
-        event!(target: "ps1_emulator::CPU", Level::TRACE, "Check Interrupt");
         self.bus
             .cop0
             .cause
@@ -798,7 +797,7 @@ impl Cpu {
 
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("CFC2 ${rt}, ${rd}"), self.registers);
 
-                self.registers.write(rd, self.gte.control_reg_read(rt));
+                self.registers.write_delayed(rd, self.gte.control_reg_read(rt));
                 Ok(())
             }
             // CFC3 - Move Control From Coprocessor 3
@@ -824,6 +823,7 @@ impl Cpu {
             // COP2 - Coprocessor Operation 2
             0x4A000000..=0x4BFFFFFF => {
                 let cofun = opcode & 0x1FFFFFF;
+                event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("COP2 {:08X}", cofun), self.registers);
                 self.gte.write_command(cofun);
                 Ok(())
             }
@@ -905,7 +905,7 @@ impl Cpu {
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("MFC2 ${rt}, ${rd}"), self.registers);
 
                 let val = self.gte.data_reg_read(rd);
-                self.registers.write(rt, val);
+                self.registers.write_delayed(rt, val);
                 Ok(())
             }
             // MFC3 - Move From Coprocesor 3

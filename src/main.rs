@@ -20,7 +20,8 @@ fn main() {
         ..Default::default()
     };
 
-    let folder: PathBuf = PathBuf::from("roms/tests/tests-Jaczekanski/gpu/animated-triangle/");
+    //let folder: PathBuf = PathBuf::from("roms/tests/tests-Jaczekanski/gpu/animated-triangle/");
+    let folder: PathBuf = PathBuf::from("roms/tests/tests-Jaczekanski/timers/");
     //let folder: PathBuf = PathBuf::from("roms/tests/tests/");
 
     let _ = eframe::run_native(
@@ -31,7 +32,7 @@ fn main() {
                 cc,
                 folder,
                 true,
-                Some(/*0x800507B8*/ 0x80010FDC),
+                Some(/*0x800507B8*/ 0x80011998),
             )))
         }),
     );

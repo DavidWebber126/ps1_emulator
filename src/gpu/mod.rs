@@ -12,6 +12,8 @@ pub struct Gpu {
     pub gp1: Gp1,
     pub frame_is_ready: bool,
     pub counter: u64,
+    pub hblank_counter: u16,
+    pub dotclock_counter: u16,
 }
 
 impl Gpu {
@@ -21,6 +23,8 @@ impl Gpu {
             gp1: Gp1::new(),
             frame_is_ready: false,
             counter: 0,
+            hblank_counter: 0,
+            dotclock_counter: 0,
         }
     }
 
@@ -80,6 +84,31 @@ impl Gpu {
     pub fn tick(&mut self, cycles: u32) -> bool {
         self.counter += cycles as u64;
 
+        // dots counter
+        let dot_wrap_value = match self.gp1.display_mode & 0b11 {
+            // 256 pix horizontal
+            0 => 2146 / 10,
+            // 320 p
+            1 => 2146 / 8,
+            // 512 p
+            2 => 2146 / 5,
+            // 640 p
+            3 => 2146 / 4,
+            _ => panic!("Impossible")
+        };
+
+        if self.counter % dot_wrap_value == 0 {
+            self.dotclock_counter += 1;
+            self.dotclock_counter %= dot_wrap_value as u16;
+        }
+
+        // hblank counter
+        if self.counter % 2146 == 0 {
+            self.hblank_counter += 1;
+            self.hblank_counter %= 263;
+        }
+
+        // Frame counter
         if self.counter >= 564480 {
             event!(target: "ps1_emulator::GPU", Level::DEBUG, "Render Frame");
             self.counter -= 564480;

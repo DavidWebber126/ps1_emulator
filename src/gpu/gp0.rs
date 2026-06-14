@@ -3,7 +3,7 @@ use std::{cmp, mem};
 use tracing::{Level, event};
 
 use super::convert_5bit_to_8bit;
-use super::rasterize;
+use crate::gpu::rasterize;
 
 const DITHER_TABLE: [[i8; 4]; 4] = [
     [-4, 0, -3, 1],
@@ -443,6 +443,8 @@ impl Gp0 {
                                 // Set Drawing Offset (X, Y)
                                 self.draw_offset.0 = (val & 0x3FF) as i16;
                                 self.draw_offset.1 = ((val >> 11) & 0x3FF) as i16;
+
+                                event!(target: "ps1_emulator::GPU", Level::TRACE, "Set Draw Offset to ({}, {})", self.draw_offset.0, self.draw_offset.1);
 
                                 Gp0State::WaitingForCommand
                             }

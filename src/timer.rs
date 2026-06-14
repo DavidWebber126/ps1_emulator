@@ -1,23 +1,32 @@
 pub struct Timer {
+    id: u8,
+    counter_mode: CounterMode,
     pub counter: u16,
     pub mode: u16,
     pub target_value: u16,
     allow_irq: bool,
+    sync_mode: u8,
+    sync_enabled: bool,
 }
 
 impl Timer {
-    pub fn new() -> Self {
+    pub fn new(id: u8) -> Self {
         Self {
+            id,
+            counter_mode: CounterMode::SystemClock,
             counter: 0,
             mode: 0,
             target_value: 0xFF,
             allow_irq: true,
+            sync_mode: 0,
+            sync_enabled: false,
         }
     }
 
     // Tick timer once. Returns true if IRQ
-    pub fn tick(&mut self) -> bool {
-        self.counter = self.counter.wrapping_add(1);
+    pub fn tick(&mut self, dotclocks: u16, hblanks: u16) -> bool {
+        self.increment_counter(dotclocks, hblanks);
+
         if self.reset_after_target() && (self.counter == self.target_value.wrapping_add(1)) {
             self.counter = 0;
         }
@@ -53,11 +62,69 @@ impl Timer {
         false
     }
 
-    pub fn write_to_mode(&mut self, val: u16) {
+    pub fn write_mode(&mut self, val: u16) {
         self.counter = 0;
         self.allow_irq = true;
         self.mode |= 0x400;
         self.mode = val & 0x3FF;
+        self.sync_enabled = val & 1 > 0;
+
+        match (val >> 8) & 0b11 {
+            0 => self.counter_mode = CounterMode::SystemClock,
+            1 => {
+                if self.id == 0 {
+                    self.counter_mode = CounterMode::Dotclock
+                }
+                if self.id == 1 {
+                    self.counter_mode = CounterMode::Hblank
+                }
+                if self.id == 2 {
+                    self.counter_mode = CounterMode::SystemClock
+                }
+            }
+            2 => {
+                if self.id == 0 || self.id == 1 {
+                    self.counter_mode = CounterMode::SystemClock
+                }
+                if self.id == 2 {
+                        self.counter_mode = CounterMode::SystemClockEighth
+                }
+            }
+            3 => {
+                if self.id == 0 {
+                    self.counter_mode = CounterMode::Dotclock
+                }
+                if self.id == 1 {
+                    self.counter_mode = CounterMode::Hblank
+                }
+                if self.id == 2 {
+                    self.counter_mode = CounterMode::SystemClockEighth
+                }
+            }
+            _ => panic!("Impossible")
+        }
+    }
+
+    pub fn read_mode(&self) -> u16 {
+
+        self.mode
+    }
+
+    fn increment_counter(&mut self, dotclocks: u16, hblanks: u16) {
+        match self.counter_mode {
+            CounterMode::SystemClock => {
+                self.counter = self.counter.wrapping_add(1);
+            }
+            CounterMode::Dotclock => {
+                self.counter = dotclocks;
+            }
+            CounterMode::Hblank => {
+                self.counter = hblanks;
+            }
+            CounterMode::SystemClockEighth => {
+                todo!()
+            }
+        }
     }
 
     // Setters and Getters
@@ -90,4 +157,12 @@ impl Timer {
     fn irq_repeat(&self) -> bool {
         self.mode & 0x40 > 0
     }
+}
+
+#[derive(Debug)]
+enum CounterMode {
+    SystemClock,
+    Dotclock,
+    Hblank,
+    SystemClockEighth,
 }

@@ -37,9 +37,9 @@ impl Bus {
             kernel_rom: Box::new([0; 524288]),
             cop0: Cop0::new(),
             interrupts: Interrupt::new(),
-            timer0: Timer::new(),
-            timer1: Timer::new(),
-            timer2: Timer::new(),
+            timer0: Timer::new(0),
+            timer1: Timer::new(1),
+            timer2: Timer::new(2),
             gpu: Gpu::new(),
             mdec: Mdec::new(),
             dma2: Dma::new(),
@@ -54,14 +54,16 @@ impl Bus {
             self.interrupts.set_vblank_irq();
         }
 
-        for _ in 0..2 {
-            if self.timer0.tick() {
+        let dots = self.gpu.dotclock_counter;
+        let hblanks = self.gpu.hblank_counter;
+        for _ in 0..1 {
+            if self.timer0.tick(dots, hblanks) {
                 self.interrupts.set_tmr0_irq();
             }
-            if self.timer1.tick() {
+            if self.timer1.tick(dots, hblanks) {
                 self.interrupts.set_tmr1_irq();
             }
-            if self.timer2.tick() {
+            if self.timer2.tick(dots, hblanks) {
                 self.interrupts.set_tmr2_irq();
             }
         }
@@ -223,8 +225,8 @@ impl Bus {
             0x1F801102 => Ok(0),
             0x1F801103 => Ok(0),
             // Timer 0 Counter Mode
-            0x1F801104 => Ok(self.timer0.mode as u8),
-            0x1F801105 => Ok((self.timer0.mode >> 8) as u8),
+            0x1F801104 => Ok(self.timer0.read_mode() as u8),
+            0x1F801105 => Ok((self.timer0.read_mode() >> 8) as u8),
             0x1F801106 => Ok(0),
             0x1F801107 => Ok(0),
             // Timer 0 Target
@@ -238,8 +240,8 @@ impl Bus {
             0x1F801112 => Ok(0),
             0x1F801113 => Ok(0),
             // Timer 1 Counter Mode
-            0x1F801114 => Ok(self.timer1.mode as u8),
-            0x1F801115 => Ok((self.timer1.mode >> 8) as u8),
+            0x1F801114 => Ok(self.timer1.read_mode() as u8),
+            0x1F801115 => Ok((self.timer1.read_mode() >> 8) as u8),
             0x1F801116 => Ok(0),
             0x1F801117 => Ok(0),
             // Timer 1 Target
@@ -253,8 +255,8 @@ impl Bus {
             0x1F801122 => Ok(0),
             0x1F801123 => Ok(0),
             // Timer 2 Counter Mode
-            0x1F801124 => Ok(self.timer2.mode as u8),
-            0x1F801125 => Ok((self.timer2.mode >> 8) as u8),
+            0x1F801124 => Ok(self.timer2.read_mode() as u8),
+            0x1F801125 => Ok((self.timer2.read_mode() >> 8) as u8),
             0x1F801126 => Ok(0),
             0x1F801127 => Ok(0),
             // Timer 2 Target
@@ -510,12 +512,12 @@ impl Bus {
             // Timer 0 Counter Mode
             0x1F801104 => {
                 self.timer0
-                    .write_to_mode((self.timer0.mode & 0xFF00) + val as u16);
+                    .write_mode((self.timer0.mode & 0xFF00) + val as u16);
                 Ok(())
             }
             0x1F801105 => {
                 self.timer0
-                    .write_to_mode((self.timer0.mode & 0xFF) + ((val as u16) << 8));
+                    .write_mode((self.timer0.mode & 0xFF) + ((val as u16) << 8));
                 Ok(())
             }
             0x1F801106 => {
@@ -553,12 +555,12 @@ impl Bus {
             // Timer 1 Counter Mode
             0x1F801114 => {
                 self.timer1
-                    .write_to_mode((self.timer1.mode & 0xFF00) + val as u16);
+                    .write_mode((self.timer1.mode & 0xFF00) + val as u16);
                 Ok(())
             }
             0x1F801115 => {
                 self.timer1
-                    .write_to_mode((self.timer1.mode & 0xFF) + ((val as u16) << 8));
+                    .write_mode((self.timer1.mode & 0xFF) + ((val as u16) << 8));
                 Ok(())
             }
             0x1F801116 => {
@@ -596,12 +598,12 @@ impl Bus {
             // Timer 2 Counter Mode
             0x1F801124 => {
                 self.timer2
-                    .write_to_mode((self.timer2.mode & 0xFF00) + val as u16);
+                    .write_mode((self.timer2.mode & 0xFF00) + val as u16);
                 Ok(())
             }
             0x1F801125 => {
                 self.timer2
-                    .write_to_mode((self.timer2.mode & 0xFF) + ((val as u16) << 8));
+                    .write_mode((self.timer2.mode & 0xFF) + ((val as u16) << 8));
                 Ok(())
             }
             0x1F801126 => {

@@ -797,7 +797,8 @@ impl Cpu {
 
                 event!(target: "ps1_emulator::CPU", Level::DEBUG, "{:<20}  {}", format!("CFC2 ${rt}, ${rd}"), self.registers);
 
-                self.registers.write_delayed(rd, self.gte.control_reg_read(rt));
+                self.registers
+                    .write_delayed(rt, self.gte.control_reg_read(rd));
                 Ok(())
             }
             // CFC3 - Move Control From Coprocessor 3

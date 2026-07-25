@@ -5,14 +5,8 @@ use tracing::{Level, event};
 use super::convert_5bit_to_8bit;
 use crate::gpu::rasterize;
 
-const DITHER_TABLE: [[i8; 4]; 4] = [
-    [-4, 0, -3, 1],
-    [2, -2, 3, -1],
-    [-3, 1, -4, 0],
-    [3, -1, 2, -2],
-];
-
-enum SemiTransparency {
+#[derive(Clone, Copy)]
+pub enum SemiTransparency {
     Blend,
     Add,
     Subtract,
@@ -70,56 +64,22 @@ enum Gp0State {
     },
 }
 
-pub struct Gp0 {
-    state: Gp0State,
-    pub vram: Box<[u8; 1048576]>, // 1024 x 512 grid of pixels (lo, hi)
-    pub params: [u32; 16],
-    //pub command_buffer: VecDeque<u32>, // Holds at most 16 words (i.e 16 u32s)
-    pub tex_page_x: u8,
-    pub tex_page_y: bool,
-    semitransparency: SemiTransparency,
-    tex_page_colors: TextureBits,
-    pub dither_enabled: bool,
-    pub draw_to_display: bool,
-    pub two_mb_mem: bool,
-    pub rect_x_flip: bool,
-    pub rect_y_flip: bool,
-    pub texture_window: u32,
-    pub draw_area_top_left: (u32, u32),
-    pub draw_area_bot_right: (u32, u32),
-    pub draw_offset: (i16, i16),
+pub struct Vram {
     pub mask_while_draw: bool,
     pub mask_before_draw: bool,
-    pub vram_size_set: bool,
+    pub bytes: Box<[u8; 1048576]>, // 1024 x 512 grid of pixels (lo, hi)
 }
 
-impl Gp0 {
+impl Vram {
     pub fn new() -> Self {
         Self {
-            state: Gp0State::WaitingForCommand,
-            vram: Box::new([0; 1048576]),
-            params: [0; 16],
-            //command_buffer: VecDeque::with_capacity(16),
-            tex_page_x: 0,
-            tex_page_y: false,
-            semitransparency: SemiTransparency::Blend,
-            tex_page_colors: TextureBits::Four,
-            dither_enabled: false,
-            draw_to_display: false,
-            two_mb_mem: false,
-            rect_x_flip: false,
-            rect_y_flip: false,
-            texture_window: 0,
-            draw_area_top_left: (0, 0),
-            draw_area_bot_right: (0, 0),
-            draw_offset: (0, 0),
             mask_while_draw: false,
             mask_before_draw: false,
-            vram_size_set: false,
+            bytes: Box::new([0; 1048576]),
         }
     }
 
-    pub fn vram_fill(&mut self, width: u32, height: u32, vram_x: u32, vram_y: u32, val: u16) {
+    pub fn vram_fill(&mut self, width: i32, height: i32, vram_x: i32, vram_y: i32, val: u16) {
         // if !self.draw_to_display && self.in_draw_area(vram_x, vram_y) {
         //     return
         // }
@@ -129,18 +89,13 @@ impl Gp0 {
                 let col = (vram_x + x) as usize % 1024;
                 let row = (vram_y + y) as usize % 512;
                 let vram_addr = 2 * (1024 * row + col);
-                self.vram[vram_addr] = val as u8;
-                self.vram[vram_addr + 1] = (val >> 8) as u8;
+                self.bytes[vram_addr + 1] = (val >> 8) as u8;
+                self.bytes[vram_addr] = val as u8;
             }
         }
     }
 
-    fn _in_draw_area(&mut self, vram_x: u32, vram_y: u32) -> bool {
-        (self.draw_area_top_left.0..self.draw_area_bot_right.0).contains(&vram_x)
-            && (self.draw_area_top_left.1..self.draw_area_bot_right.1).contains(&vram_y)
-    }
-
-    fn write_5bit_color(&mut self, addr: usize, val: u16) {
+    pub fn write_5bit_color(&mut self, addr: usize, val: u16) {
         if self.mask_before_draw && self.read_vram(addr) & 0x8000 > 0 {
             return;
         }
@@ -152,11 +107,23 @@ impl Gp0 {
         // If Mask While Draw is set, then mask_field is forced to true. Otherwise set to bit 15
         let mask_bit = self.mask_while_draw || (val & 0x8000 > 0);
 
-        self.vram[2 * addr] = val as u8;
-        self.vram[2 * addr + 1] = ((mask_bit as u8) << 7) | (val >> 8) as u8;
+        self.bytes[2 * addr] = val as u8;
+        self.bytes[2 * addr + 1] = ((mask_bit as u8) << 7) | (val >> 8) as u8;
     }
 
-    fn write_5bit_color_alpha(&mut self, addr: usize, val: u16) {
+    pub fn read_vram(&self, addr: usize) -> u16 {
+        let lo = self.bytes[2 * addr];
+        let hi = self.bytes[2 * addr + 1];
+
+        u16::from_le_bytes([lo, hi])
+    }
+
+    pub fn write_5bit_color_alpha(
+        &mut self,
+        addr: usize,
+        val: u16,
+        transparency: SemiTransparency,
+    ) {
         if self.mask_before_draw && self.read_vram(addr) & 0x8000 > 0 {
             return;
         }
@@ -172,12 +139,12 @@ impl Gp0 {
         let g = convert_5bit_to_8bit((val >> 5) & 0x1F);
         let b = convert_5bit_to_8bit((val >> 10) & 0x1F);
 
-        let prev_color = u16::from_le_bytes([self.vram[2 * addr], self.vram[2 * addr + 1]]);
+        let prev_color = u16::from_le_bytes([self.bytes[2 * addr], self.bytes[2 * addr + 1]]);
         let prev_color_r = convert_5bit_to_8bit(prev_color & 0x1F);
         let prev_color_g = convert_5bit_to_8bit((prev_color >> 5) & 0x1F);
         let prev_color_b = convert_5bit_to_8bit((prev_color >> 10) & 0x1F);
 
-        let (new_r, new_g, new_b) = match self.semitransparency {
+        let (new_r, new_g, new_b) = match transparency {
             SemiTransparency::Blend => (
                 r / 2 + prev_color_r / 2,
                 g / 2 + prev_color_g / 2,
@@ -205,15 +172,64 @@ impl Gp0 {
         let new_b = new_b >> 3;
 
         let new_color = (new_r as u16) | ((new_g as u16) << 5) | ((new_b as u16) << 10);
-        self.vram[2 * addr] = new_color as u8;
-        self.vram[2 * addr + 1] = ((mask_bit as u8) << 7) | (new_color >> 8) as u8;
+        self.bytes[2 * addr] = new_color as u8;
+        self.bytes[2 * addr + 1] = ((mask_bit as u8) << 7) | (new_color >> 8) as u8;
     }
 
-    pub fn read_vram(&self, addr: usize) -> u16 {
-        let lo = self.vram[2 * addr];
-        let hi = self.vram[2 * addr + 1];
+    fn copy_vram(&mut self, source_addr: usize, dest_addr: usize) {
+        self.bytes[2 * dest_addr] = self.bytes[2 * source_addr];
+        self.bytes[2 * dest_addr + 1] = self.bytes[2 * source_addr + 1];
+    }
+}
 
-        u16::from_le_bytes([lo, hi])
+pub struct Gp0 {
+    state: Gp0State,
+    pub params: [u32; 16],
+    pub vram: Vram,
+    //pub command_buffer: VecDeque<u32>, // Holds at most 16 words (i.e 16 u32s)
+    pub tex_page_x: u8,
+    pub tex_page_y: bool,
+    semitransparency: SemiTransparency,
+    tex_page_colors: TextureBits,
+    pub dither_enabled: bool,
+    pub draw_to_display: bool,
+    pub two_mb_mem: bool,
+    pub rect_x_flip: bool,
+    pub rect_y_flip: bool,
+    pub texture_window: u32,
+    pub draw_area_top_left: (u32, u32),
+    pub draw_area_bot_right: (u32, u32),
+    pub draw_offset: (i16, i16),
+    pub vram_size_set: bool,
+}
+
+impl Gp0 {
+    pub fn new() -> Self {
+        Self {
+            state: Gp0State::WaitingForCommand,
+            vram: Vram::new(),
+            params: [0; 16],
+            //command_buffer: VecDeque::with_capacity(16),
+            tex_page_x: 0,
+            tex_page_y: false,
+            semitransparency: SemiTransparency::Blend,
+            tex_page_colors: TextureBits::Four,
+            dither_enabled: false,
+            draw_to_display: false,
+            two_mb_mem: false,
+            rect_x_flip: false,
+            rect_y_flip: false,
+            texture_window: 0,
+            draw_area_top_left: (0, 0),
+            draw_area_bot_right: (0, 0),
+            draw_offset: (0, 0),
+            vram_size_set: false,
+        }
+    }
+
+    fn _in_draw_area(&mut self, vram_x: u32, vram_y: u32) -> bool {
+        (self.draw_area_top_left.0..self.draw_area_bot_right.0).contains(&vram_x)
+            && (self.draw_area_top_left.1..self.draw_area_bot_right.1).contains(&vram_y)
     }
 
     fn modulate_5bit_color(&self, col1: u16, col2: u32) -> u16 {
@@ -231,11 +247,6 @@ impl Gp0 {
         let new_b = (((b1 * b2) / 128.0).round() as u8) >> 3;
 
         new_r as u16 | (new_g as u16) << 5 | (new_b as u16) << 10 | mask
-    }
-
-    fn copy_vram(&mut self, source_addr: usize, dest_addr: usize) {
-        self.vram[2 * dest_addr] = self.vram[2 * source_addr];
-        self.vram[2 * dest_addr + 1] = self.vram[2 * source_addr + 1];
     }
 
     pub fn transparency_mode(&self) -> u32 {
@@ -275,6 +286,7 @@ impl Gp0 {
                         let size = if (val >> 27) & 1 > 0 { 4 } else { 3 };
 
                         if shaded {
+                            // Color data
                             self.params[1] = val & 0xFFFFFF;
                             Gp0State::ReceivingPolyVert {
                                 size,
@@ -329,6 +341,7 @@ impl Gp0 {
 
                         event!(target: "ps1_emulator::GPU", Level::TRACE, "GP0 Rectangle ({:?}) Primitive command received", command);
 
+                        // save command as first parameter
                         self.params[0] = val;
 
                         Gp0State::ReceivingParams { command, idx: 1 }
@@ -450,8 +463,8 @@ impl Gp0 {
                             }
                             0xE6 => {
                                 // Mask Bit Setting
-                                self.mask_while_draw = val & 1 > 0;
-                                self.mask_before_draw = val & 2 > 0;
+                                self.vram.mask_while_draw = val & 1 > 0;
+                                self.vram.mask_before_draw = val & 2 > 0;
 
                                 Gp0State::WaitingForCommand
                             }
@@ -522,8 +535,8 @@ impl Gp0 {
                         }
                         Commands::VramFill => {
                             let command = self.params[0];
-                            let vram_x = self.params[1] & 0x3FF;
-                            let vram_y = (self.params[1] >> 16) & 0x1FF;
+                            let vram_x = ((self.params[1] & 0xFFFF) as i16) as i32;
+                            let vram_y = (((self.params[1] >> 16) & 0xFFFF) as i16) as i32;
                             let width = self.params[2] & 0x3FF;
                             let height = (self.params[2] >> 16) & 0x1FF;
 
@@ -532,7 +545,8 @@ impl Gp0 {
                             let b = ((command >> 16) & 0xFF) >> 3;
 
                             let pixel = (r | (g << 5) | (b << 10)) as u16;
-                            self.vram_fill(width, height, vram_x, vram_y, pixel);
+                            self.vram
+                                .vram_fill(width as i32, height as i32, vram_x, vram_y, pixel);
                             Gp0State::WaitingForCommand
                         }
                     }
@@ -565,18 +579,18 @@ impl Gp0 {
                 if idx >= limit {
                     let mut index = 1 + shaded as usize;
                     let v0 = (
-                        self.params[index] & 0x3FF,
-                        ((self.params[index] >> 16) & 0x3FF),
+                        ((self.params[index] & 0xFFFF) as i16) as i32,
+                        (((self.params[index] >> 16) & 0xFFFF) as i16) as i32,
                     );
                     index += 1 + textured as usize + shaded as usize;
                     let v1 = (
-                        self.params[index] & 0x3FF,
-                        ((self.params[index] >> 16) & 0x3FF),
+                        ((self.params[index] & 0xFFFF) as i16) as i32,
+                        (((self.params[index] >> 16) & 0xFFFF) as i16) as i32,
                     );
                     index += 1 + textured as usize + shaded as usize;
                     let v2 = (
-                        self.params[index] & 0x3FF,
-                        ((self.params[index] >> 16) & 0x3FF),
+                        ((self.params[index] & 0xFFFF) as i16) as i32,
+                        (((self.params[index] >> 16) & 0xFFFF) as i16) as i32,
                     );
 
                     let (min, max) = self.get_bounds(v0, v1, v2);
@@ -688,8 +702,8 @@ impl Gp0 {
                     if size == 4 {
                         index += 1 + textured as usize + shaded as usize;
                         let v3 = (
-                            self.params[index] & 0x3FF,
-                            ((self.params[index] >> 16) & 0x3FF),
+                            ((self.params[index] & 0xFFFF) as i16) as i32,
+                            (((self.params[index] >> 16) & 0xFFFF) as i16) as i32,
                         );
 
                         let (min, max) = self.get_bounds(v1, v2, v3);
@@ -772,10 +786,10 @@ impl Gp0 {
                     (true, false) => {
                         // Polyline but no stop signal. Continue to draw
                         if idx == 2 && !shaded {
-                            let x1 = self.params[1] & 0x3FF;
-                            let y1 = (self.params[1] >> 16) & 0x1FF;
-                            let x2 = self.params[2] & 0x3FF;
-                            let y2 = (self.params[2] >> 16) & 0x1FF;
+                            let x1 = ((self.params[1] & 0xFFFF) as i16) as i32;
+                            let y1 = (((self.params[1] >> 16) & 0xFFFF) as i16) as i32;
+                            let x2 = ((self.params[2] & 0xFFFF) as i16) as i32;
+                            let y2 = (((self.params[2] >> 16) & 0xFFFF) as i16) as i32;
 
                             self.draw_line(x1, y1, x2, y2);
                             self.params[1] = self.params[2];
@@ -786,11 +800,11 @@ impl Gp0 {
                             }
                         } else if idx == 4 {
                             let color1 = self.params[1];
-                            let x1 = self.params[2] & 0x3FF;
-                            let y1 = (self.params[2] >> 16) & 0x1FF;
+                            let x1 = ((self.params[2] & 0xFFFF) as i16) as i32;
+                            let y1 = (((self.params[2] >> 16) & 0xFFFF) as i16) as i32;
                             let color2 = self.params[3];
-                            let x2 = self.params[4] & 0x3FF;
-                            let y2 = (self.params[4] >> 16) & 0x1FF;
+                            let x2 = ((self.params[4] & 0xFFFF) as i16) as i32;
+                            let y2 = (((self.params[4] >> 16) & 0xFFFF) as i16) as i32;
 
                             self.draw_line_shaded(x1, y1, color1, x2, y2, color2);
                             self.params[1] = self.params[3];
@@ -811,20 +825,20 @@ impl Gp0 {
                     (false, _) => {
                         // Single line. Draw one line then end
                         if idx == 2 && !shaded {
-                            let x1 = self.params[1] & 0x3FF;
-                            let y1 = (self.params[1] >> 16) & 0x1FF;
-                            let x2 = self.params[2] & 0x3FF;
-                            let y2 = (self.params[2] >> 16) & 0x1FF;
+                            let x1 = ((self.params[1] & 0xFFFF) as i16) as i32;
+                            let y1 = (((self.params[1] >> 16) & 0xFFFF) as i16) as i32;
+                            let x2 = ((self.params[2] & 0xFFFF) as i16) as i32;
+                            let y2 = (((self.params[2] >> 16) & 0xFFFF) as i16) as i32;
 
                             self.draw_line(x1, y1, x2, y2);
                             Gp0State::WaitingForCommand
                         } else if idx == 4 {
                             let color1 = self.params[1];
-                            let x1 = self.params[2] & 0x3FF;
-                            let y1 = (self.params[2] >> 16) & 0x1FF;
+                            let x1 = ((self.params[2] & 0xFFFF) as i16) as i32;
+                            let y1 = (((self.params[2] >> 16) & 0xFFFF) as i16) as i32;
                             let color2 = self.params[3];
-                            let x2 = self.params[4] & 0x3FF;
-                            let y2 = (self.params[4] >> 16) & 0x1FF;
+                            let x2 = ((self.params[4] & 0xFFFF) as i16) as i32;
+                            let y2 = (((self.params[4] >> 16) & 0xFFFF) as i16) as i32;
 
                             self.draw_line_shaded(x1, y1, color1, x2, y2, color2);
                             Gp0State::WaitingForCommand
@@ -884,7 +898,7 @@ impl Gp0 {
             let vram_col = ((fields.vram_x + fields.current_col) & 0x3FF) as usize;
 
             let vram_addr = 1024 * vram_row + vram_col;
-            self.write_5bit_color(vram_addr, halfword);
+            self.vram.write_5bit_color(vram_addr, halfword);
 
             fields.current_col += 1;
             if fields.current_col == fields.width {
@@ -939,7 +953,7 @@ impl Gp0 {
             let vram_row = ((fields.vram_y + fields.current_row) & 0x1FF) as usize;
             let vram_col = ((fields.vram_x + fields.current_col) & 0x3FF) as usize;
             let vram_addr = 1024 * vram_row + vram_col;
-            let [vram_lo, vram_hi] = self.read_vram(vram_addr).to_le_bytes();
+            let [vram_lo, vram_hi] = self.vram.read_vram(vram_addr).to_le_bytes();
 
             out[2 * i] = vram_lo;
             out[2 * i + 1] = vram_hi;
@@ -980,7 +994,7 @@ impl Gp0 {
                 let dest_col = ((dest_x + x) & 0x3FF) as usize;
                 let source_addr = 1024 * source_row + source_col;
                 let dest_addr = 1024 * dest_row + dest_col;
-                self.copy_vram(source_addr, dest_addr);
+                self.vram.copy_vram(source_addr, dest_addr);
             }
         }
     }
@@ -988,37 +1002,37 @@ impl Gp0 {
     // returns (min_x, min_y) and (max_x, max_y) of bounding box
     fn get_bounds(
         &mut self,
-        v0: (u32, u32),
-        v1: (u32, u32),
-        v2: (u32, u32),
-    ) -> ((u32, u32), (u32, u32)) {
+        v0: (i32, i32),
+        v1: (i32, i32),
+        v2: (i32, i32),
+    ) -> ((i32, i32), (i32, i32)) {
         let min_x = cmp::max(
-            self.draw_area_top_left.0,
+            self.draw_area_top_left.0 as i32,
             cmp::min(v0.0, cmp::min(v1.0, v2.0)),
         );
         let min_y = cmp::max(
-            self.draw_area_top_left.1,
+            self.draw_area_top_left.1 as i32,
             cmp::min(v0.1, cmp::min(v1.1, v2.1)),
         );
         let max_x = cmp::min(
-            self.draw_area_bot_right.0,
+            self.draw_area_bot_right.0 as i32,
             cmp::max(v0.0, cmp::max(v1.0, v2.0)),
         );
         let max_y = cmp::min(
-            self.draw_area_bot_right.1,
+            self.draw_area_bot_right.1 as i32,
             cmp::max(v0.1, cmp::max(v1.1, v2.1)),
         );
 
         ((min_x, min_y), (max_x, max_y))
     }
 
-    fn rasterize_triangle(
+    pub fn rasterize_triangle(
         &mut self,
-        mut v0: (u32, u32),
-        mut v1: (u32, u32),
-        v2: (u32, u32),
-        min: (u32, u32),
-        max: (u32, u32),
+        mut v0: (i32, i32),
+        mut v1: (i32, i32),
+        v2: (i32, i32),
+        min: (i32, i32),
+        max: (i32, i32),
     ) {
         if min.0 > max.0 || min.1 > max.1 {
             return;
@@ -1036,16 +1050,17 @@ impl Gp0 {
 
         let pixel = (r | (g << 5) | (b << 10)) as u16;
 
-        let use_alpha = (self.params[0] >> 25) & 0x1 > 0;
+        let use_alpha = (command >> 25) & 0x1 > 0;
 
         for y in min.1..=max.1 {
             for x in min.0..=max.0 {
                 if rasterize::inside_triange((x, y), v0, v1, v2).is_some() {
                     let vram_addr = 1024 * (y as usize) + x as usize;
                     if use_alpha {
-                        self.write_5bit_color_alpha(vram_addr, pixel);
+                        self.vram
+                            .write_5bit_color_alpha(vram_addr, pixel, self.semitransparency);
                     } else {
-                        self.write_5bit_color(vram_addr, pixel);
+                        self.vram.write_5bit_color(vram_addr, pixel);
                     }
                 }
             }
@@ -1054,15 +1069,15 @@ impl Gp0 {
 
     fn rasterize_triangle_textured(
         &mut self,
-        mut v0: (u32, u32),
-        mut v1: (u32, u32),
-        v2: (u32, u32),
+        mut v0: (i32, i32),
+        mut v1: (i32, i32),
+        v2: (i32, i32),
         mut uv0: (u32, u32),
         mut uv1: (u32, u32),
         uv2: (u32, u32),
         clut: (u16, u16),
-        min: (u32, u32),
-        max: (u32, u32),
+        min: (i32, i32),
+        max: (i32, i32),
     ) {
         if min.0 > max.0 || min.1 > max.1 {
             return;
@@ -1097,9 +1112,10 @@ impl Gp0 {
 
                     let vram_addr = 1024 * (y as usize) + x as usize;
                     if use_alpha {
-                        self.write_5bit_color_alpha(vram_addr, pixel);
+                        self.vram
+                            .write_5bit_color_alpha(vram_addr, pixel, self.semitransparency);
                     } else {
-                        self.write_5bit_color(vram_addr, pixel);
+                        self.vram.write_5bit_color(vram_addr, pixel);
                     }
                 }
             }
@@ -1108,14 +1124,14 @@ impl Gp0 {
 
     fn rasterize_triangle_shaded(
         &mut self,
-        mut v0: (u32, u32),
-        mut v1: (u32, u32),
-        v2: (u32, u32),
+        mut v0: (i32, i32),
+        mut v1: (i32, i32),
+        v2: (i32, i32),
         mut c0: u32,
         mut c1: u32,
         c2: u32,
-        min: (u32, u32),
-        max: (u32, u32),
+        min: (i32, i32),
+        max: (i32, i32),
     ) {
         if min.0 > max.0 || min.1 > max.1 {
             return;
@@ -1145,7 +1161,7 @@ impl Gp0 {
                     let g = (a * g0 as f32 + b * g1 as f32 + c * g2 as f32).round() as u8;
                     let b = (a * b0 as f32 + b * b1 as f32 + c * b2 as f32).round() as u8;
                     let (r, g, b) = if self.dither_enabled {
-                        dither((r, g, b), (x, y))
+                        rasterize::dither((r, g, b), (x, y))
                     } else {
                         (r, g, b)
                     };
@@ -1156,9 +1172,10 @@ impl Gp0 {
 
                     let vram_addr = 1024 * (y as usize) + x as usize;
                     if use_alpha {
-                        self.write_5bit_color_alpha(vram_addr, pixel);
+                        self.vram
+                            .write_5bit_color_alpha(vram_addr, pixel, self.semitransparency);
                     } else {
-                        self.write_5bit_color(vram_addr, pixel);
+                        self.vram.write_5bit_color(vram_addr, pixel);
                     }
                 }
             }
@@ -1167,9 +1184,9 @@ impl Gp0 {
 
     fn rasterize_triangle_textured_and_shaded(
         &mut self,
-        mut v0: (u32, u32),
-        mut v1: (u32, u32),
-        v2: (u32, u32),
+        mut v0: (i32, i32),
+        mut v1: (i32, i32),
+        v2: (i32, i32),
         mut uv0: (u32, u32),
         mut uv1: (u32, u32),
         uv2: (u32, u32),
@@ -1177,8 +1194,8 @@ impl Gp0 {
         mut c1: u32,
         c2: u32,
         clut: (u16, u16),
-        min: (u32, u32),
-        max: (u32, u32),
+        min: (i32, i32),
+        max: (i32, i32),
     ) {
         if min.0 > max.0 || min.1 > max.1 {
             return;
@@ -1219,7 +1236,7 @@ impl Gp0 {
                     let b = (a * b0 as f32 + b * b1 as f32 + c * b2 as f32).round() as u8;
 
                     let (r, g, b) = if self.dither_enabled {
-                        dither((r, g, b), (x, y))
+                        rasterize::dither((r, g, b), (x, y))
                     } else {
                         (r, g, b)
                     };
@@ -1229,16 +1246,17 @@ impl Gp0 {
 
                     let vram_addr = 1024 * (y as usize) + x as usize;
                     if use_alpha {
-                        self.write_5bit_color_alpha(vram_addr, pixel);
+                        self.vram
+                            .write_5bit_color_alpha(vram_addr, pixel, self.semitransparency);
                     } else {
-                        self.write_5bit_color(vram_addr, pixel);
+                        self.vram.write_5bit_color(vram_addr, pixel);
                     }
                 }
             }
         }
     }
 
-    fn draw_line(&mut self, x1: u32, y1: u32, x2: u32, y2: u32) {
+    fn draw_line(&mut self, x1: i32, y1: i32, x2: i32, y2: i32) {
         let command = self.params[0];
 
         let r = (command & 0xFF) >> 3;
@@ -1257,9 +1275,10 @@ impl Gp0 {
                 if (0.0..=512.0).contains(&y) {
                     let vram_addr = 1024 * (y as usize) + x as usize;
                     if use_alpha {
-                        self.write_5bit_color_alpha(vram_addr, pixel);
+                        self.vram
+                            .write_5bit_color_alpha(vram_addr, pixel, self.semitransparency);
                     } else {
-                        self.write_5bit_color(vram_addr, pixel);
+                        self.vram.write_5bit_color(vram_addr, pixel);
                     }
                 }
             }
@@ -1271,16 +1290,17 @@ impl Gp0 {
                 if (0.0..=1024.0).contains(&x) {
                     let vram_addr = 1024 * (y as usize) + x as usize;
                     if use_alpha {
-                        self.write_5bit_color_alpha(vram_addr, pixel);
+                        self.vram
+                            .write_5bit_color_alpha(vram_addr, pixel, self.semitransparency);
                     } else {
-                        self.write_5bit_color(vram_addr, pixel);
+                        self.vram.write_5bit_color(vram_addr, pixel);
                     }
                 }
             }
         };
     }
 
-    fn draw_line_shaded(&mut self, x1: u32, y1: u32, c1: u32, x2: u32, y2: u32, c2: u32) {
+    fn draw_line_shaded(&mut self, x1: i32, y1: i32, c1: u32, x2: i32, y2: i32, c2: u32) {
         let command = self.params[0];
 
         let r1 = c1 & 0xFF;
@@ -1314,9 +1334,10 @@ impl Gp0 {
                 if (0.0..=512.0).contains(&y) {
                     let vram_addr = 1024 * (y as usize) + x as usize;
                     if use_alpha {
-                        self.write_5bit_color_alpha(vram_addr, pixel);
+                        self.vram
+                            .write_5bit_color_alpha(vram_addr, pixel, self.semitransparency);
                     } else {
-                        self.write_5bit_color(vram_addr, pixel);
+                        self.vram.write_5bit_color(vram_addr, pixel);
                     }
                 }
             }
@@ -1340,9 +1361,10 @@ impl Gp0 {
                 if (0.0..1024.0).contains(&x) {
                     let vram_addr = 1024 * (y as usize) + x as usize;
                     if use_alpha {
-                        self.write_5bit_color_alpha(vram_addr, pixel);
+                        self.vram
+                            .write_5bit_color_alpha(vram_addr, pixel, self.semitransparency);
                     } else {
-                        self.write_5bit_color(vram_addr, pixel);
+                        self.vram.write_5bit_color(vram_addr, pixel);
                     }
                 }
             }
@@ -1405,9 +1427,10 @@ impl Gp0 {
                     };
 
                     if use_alpha {
-                        self.write_5bit_color_alpha(vram_addr, pixel);
+                        self.vram
+                            .write_5bit_color_alpha(vram_addr, pixel, self.semitransparency);
                     } else {
-                        self.write_5bit_color(vram_addr, pixel);
+                        self.vram.write_5bit_color(vram_addr, pixel);
                     }
                 }
             }
@@ -1437,9 +1460,10 @@ impl Gp0 {
                 {
                     let vram_addr = 1024 * vram_row as usize + vram_col as usize;
                     if use_alpha {
-                        self.write_5bit_color_alpha(vram_addr, pixel);
+                        self.vram
+                            .write_5bit_color_alpha(vram_addr, pixel, self.semitransparency);
                     } else {
-                        self.write_5bit_color(vram_addr, pixel);
+                        self.vram.write_5bit_color(vram_addr, pixel);
                     }
                 }
             }
@@ -1450,29 +1474,29 @@ impl Gp0 {
         // Get texel at (x,y) relative to to the texture page
         let tex_addr =
             x as usize / 4 + tex_page.0 as usize + 1024 * (y as usize + tex_page.1 as usize);
-        let texel = self.read_vram(tex_addr);
+        let texel = self.vram.read_vram(tex_addr);
         // Get the index offset for current pixel to be used in the clut
         let index = (texel >> (4 * (x % 4))) & 0xF;
         let clut_addr = 1024 * (clut.1 as usize) + clut.0 as usize + index as usize;
-        self.read_vram(clut_addr)
+        self.vram.read_vram(clut_addr)
     }
 
     fn get_texel_8bit(&self, x: u32, y: u32, clut: (u16, u16), tex_page: (u16, u16)) -> u16 {
         // Get texel at (x,y) relative to to the texture page
         let tex_addr =
             x as usize / 2 + tex_page.0 as usize + 1024 * (y as usize + tex_page.1 as usize);
-        let texel = self.read_vram(tex_addr);
+        let texel = self.vram.read_vram(tex_addr);
         // Get the index offset for current pixel to be used in the clut
         let index = (texel >> (8 * (x % 2))) & 0xFF;
         let clut_addr = 1024 * (clut.1 as usize) + clut.0 as usize + index as usize;
-        self.read_vram(clut_addr)
+        self.vram.read_vram(clut_addr)
     }
 
     fn get_texel_15bit(&self, x: u32, y: u32, tex_page: (u16, u16)) -> u16 {
         let vram_x = (x as usize + tex_page.0 as usize) % 1024;
         let vram_y = (y as usize + tex_page.1 as usize) % 512;
         let tex_addr = vram_x + 1024 * vram_y;
-        self.read_vram(tex_addr)
+        self.vram.read_vram(tex_addr)
     }
 
     fn get_color_from_uv(
@@ -1507,17 +1531,6 @@ impl Gp0 {
     pub fn is_sending_data(&self) -> bool {
         matches!(self.state, Gp0State::SendingData(_))
     }
-}
-
-// Color is in rgb
-fn dither(color: (u8, u8, u8), pixel: (u32, u32)) -> (u8, u8, u8) {
-    let offset = DITHER_TABLE[(pixel.0 & 0b11) as usize][(pixel.1 & 0b11) as usize];
-
-    (
-        color.0.saturating_add_signed(offset),
-        color.1.saturating_add_signed(offset),
-        color.2.saturating_add_signed(offset),
-    )
 }
 
 fn param_limits(command: Commands) -> u8 {

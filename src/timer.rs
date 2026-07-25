@@ -87,7 +87,7 @@ impl Timer {
                     self.counter_mode = CounterMode::SystemClock
                 }
                 if self.id == 2 {
-                        self.counter_mode = CounterMode::SystemClockEighth
+                    self.counter_mode = CounterMode::SystemClockEighth
                 }
             }
             3 => {
@@ -101,12 +101,11 @@ impl Timer {
                     self.counter_mode = CounterMode::SystemClockEighth
                 }
             }
-            _ => panic!("Impossible")
+            _ => panic!("Impossible"),
         }
     }
 
     pub fn read_mode(&self) -> u16 {
-
         self.mode
     }
 

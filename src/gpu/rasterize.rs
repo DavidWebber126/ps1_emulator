@@ -1,13 +1,8 @@
-// pub struct Vert {
-//     pub x: u32,
-//     pub y: u32,
-// }
-
 pub fn inside_triange(
-    p: (u32, u32),
-    v0: (u32, u32),
-    v1: (u32, u32),
-    v2: (u32, u32),
+    p: (i32, i32),
+    v0: (i32, i32),
+    v1: (i32, i32),
+    v2: (i32, i32),
 ) -> Option<[f32; 3]> {
     let mut barycentric_coords = [0.0; 3];
 
@@ -39,7 +34,24 @@ pub fn inside_triange(
 }
 
 // Cross product of (v1 - v0) and (v2 - v0)
-pub fn cross_product(v0: (u32, u32), v1: (u32, u32), v2: (u32, u32)) -> i32 {
-    (v1.0 as i32 - v0.0 as i32) * (v2.1 as i32 - v0.1 as i32)
-        - (v1.1 as i32 - v0.1 as i32) * (v2.0 as i32 - v0.0 as i32)
+pub fn cross_product(v0: (i32, i32), v1: (i32, i32), v2: (i32, i32)) -> i32 {
+    (v1.0 - v0.0) * (v2.1 - v0.1) - (v1.1 - v0.1) * (v2.0 - v0.0)
+}
+
+const DITHER_TABLE: [[i8; 4]; 4] = [
+    [-4, 0, -3, 1],
+    [2, -2, 3, -1],
+    [-3, 1, -4, 0],
+    [3, -1, 2, -2],
+];
+
+// Color is in rgb
+pub fn dither(color: (u8, u8, u8), pixel: (i32, i32)) -> (u8, u8, u8) {
+    let offset = DITHER_TABLE[(pixel.0 & 0b11) as usize][(pixel.1 & 0b11) as usize];
+
+    (
+        color.0.saturating_add_signed(offset),
+        color.1.saturating_add_signed(offset),
+        color.2.saturating_add_signed(offset),
+    )
 }

@@ -59,8 +59,8 @@ impl Gpu {
         let texture_depth = self.gp0.texture_page_colors() << 7;
         let dither = (self.gp0.dither_enabled as u32) << 9;
         let display_draw = (self.gp0.draw_to_display as u32) << 10;
-        let force_mask_bit = (self.gp0.mask_while_draw as u32) << 11;
-        let texture_mask = (self.gp0.mask_before_draw as u32) << 12;
+        let force_mask_bit = (self.gp0.vram.mask_while_draw as u32) << 11;
+        let texture_mask = (self.gp0.vram.mask_before_draw as u32) << 12;
         let two_mb = (self.gp0.two_mb_mem as u32) << 15;
 
         let output = dma_ready
@@ -94,16 +94,16 @@ impl Gpu {
             2 => 2146 / 5,
             // 640 p
             3 => 2146 / 4,
-            _ => panic!("Impossible")
+            _ => panic!("Impossible"),
         };
 
-        if self.counter % dot_wrap_value == 0 {
+        if self.counter.is_multiple_of(dot_wrap_value) {
             self.dotclock_counter += 1;
             self.dotclock_counter %= dot_wrap_value as u16;
         }
 
         // hblank counter
-        if self.counter % 2146 == 0 {
+        if self.counter.is_multiple_of(2146) {
             self.hblank_counter += 1;
             self.hblank_counter %= 263;
         }
@@ -125,9 +125,9 @@ impl Gpu {
             for y in 0..512 {
                 for x in 0..682 {
                     let base_addr = 2048 * y + 3 * x;
-                    let r = self.gp0.vram[base_addr];
-                    let g = self.gp0.vram[base_addr + 1];
-                    let b = self.gp0.vram[base_addr + 2];
+                    let r = self.gp0.vram.bytes[base_addr];
+                    let g = self.gp0.vram.bytes[base_addr + 1];
+                    let b = self.gp0.vram.bytes[base_addr + 2];
 
                     output.push(r);
                     output.push(g);
@@ -139,8 +139,10 @@ impl Gpu {
         } else {
             let mut output = Vec::with_capacity(1572864);
             for addr in 0..524288 {
-                let pixel =
-                    u16::from_le_bytes([self.gp0.vram[2 * addr], self.gp0.vram[2 * addr + 1]]);
+                let pixel = u16::from_le_bytes([
+                    self.gp0.vram.bytes[2 * addr],
+                    self.gp0.vram.bytes[2 * addr + 1],
+                ]);
                 let r = convert_5bit_to_8bit(pixel & 0x1F);
                 let g = convert_5bit_to_8bit((pixel >> 5) & 0x1F);
                 let b = convert_5bit_to_8bit((pixel >> 10) & 0x1F);

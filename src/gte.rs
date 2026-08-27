@@ -543,6 +543,20 @@ impl Gte {
                 let lm = cmd & 0x400 > 0;
                 self.rtpt(sf, lm);
             }
+            0x3D => {
+                // General Purpose interpolation: GPF
+                event!(target: "ps1_emulator::GTE", Level::TRACE, "GPF");
+                let sf = cmd & 0x80000 > 0;
+                let lm = cmd & 0x400 > 0;
+                self.gpf(sf, lm);
+            }
+            0x3E => {
+                // General Purpose interpolation with base: GPL
+                event!(target: "ps1_emulator::GTE", Level::TRACE, "GPL");
+                let sf = cmd & 0x80000 > 0;
+                let lm = cmd & 0x400 > 0;
+                self.gpl(sf, lm);
+            }
             0x3F => {
                 // Normal Color Col. triple vector: NCCT
                 event!(target: "ps1_emulator::GTE", Level::TRACE, "NCCT");
@@ -552,7 +566,7 @@ impl Gte {
                 self.ncct(sf, lm);
             }
             _ => {
-                event!(target: "ps1_emulator::GTE", Level::ERROR, "No GTE command for 0x{:02X}", cmd & 0x1F);
+                event!(target: "ps1_emulator::GTE", Level::ERROR, "No GTE command for 0x{:02X}", cmd & 0x3F);
             }
         }
     }
@@ -684,16 +698,18 @@ impl Gte {
     }
 
     fn rtps(&mut self, sf: bool, lm: bool) {
-        self.perspective_transform(self.v0, sf, lm);
+        let div = self.perspective_transform(self.v0, sf, lm);
+        self.depth_que(div);
     }
 
     fn rtpt(&mut self, sf: bool, lm: bool) {
-        self.perspective_transform(self.v0, sf, lm);
-        self.perspective_transform(self.v1, sf, lm);
-        self.perspective_transform(self.v2, sf, lm);
+        let _ = self.perspective_transform(self.v0, sf, lm);
+        let _ = self.perspective_transform(self.v1, sf, lm);
+        let div = self.perspective_transform(self.v2, sf, lm);
+        self.depth_que(div);
     }
 
-    fn perspective_transform(&mut self, vector: [i16; 3], sf: bool, lm: bool) {
+    fn perspective_transform(&mut self, vector: [i16; 3], sf: bool, lm: bool) -> i64 {
         /*
         IR1 = MAC1 = (TRX*1000h + RT11*VX0 + RT12*VY0 + RT13*VZ0) SAR (sf*12)
         IR2 = MAC2 = (TRY*1000h + RT21*VX0 + RT22*VY0 + RT23*VZ0) SAR (sf*12)
@@ -703,29 +719,65 @@ impl Gte {
         MAC0=(((H*20000h/SZ3)+1)/2)*IR2+OFY, SY2=MAC0/10000h ;ScrY FIFO -400h..+3FFh
         MAC0=(((H*20000h/SZ3)+1)/2)*DQA+DQB, IR0=MAC0/1000h  ;Depth cueing 0..+1000h
         */
-        // MAC1
-        let sum1 = self.translation_vec[0] as i64 * 0x1000
-            + self.rotation_matrix[0][0] as i64 * vector[0] as i64
-            + self.rotation_matrix[0][1] as i64 * vector[1] as i64
-            + self.rotation_matrix[0][2] as i64 * vector[2] as i64;
+        let mut sum1 = self.translation_vec[0] as i64 * 0x1000
+            + self.rotation_matrix[0][0] as i64 * vector[0] as i64;
+        let mut sum2 = self.translation_vec[1] as i64 * 0x1000
+            + self.rotation_matrix[1][0] as i64 * vector[0] as i64;
+        let mut sum3 = self.translation_vec[2] as i64 * 0x1000
+            + self.rotation_matrix[2][0] as i64 * vector[0] as i64;
+
         self.flag.mac_flag_check(1, sum1);
-        self.mac[1] = (sum1 >> (sf as u8 * 12)) as i32;
-
-        // MAC2
-        let sum2 = self.translation_vec[1] as i64 * 0x1000
-            + self.rotation_matrix[1][0] as i64 * vector[0] as i64
-            + self.rotation_matrix[1][1] as i64 * vector[1] as i64
-            + self.rotation_matrix[1][2] as i64 * vector[2] as i64;
         self.flag.mac_flag_check(2, sum2);
-        self.mac[2] = (sum2 >> (sf as u8 * 12)) as i32;
-
-        // MAC3
-        let sum3 = self.translation_vec[2] as i64 * 0x1000
-            + self.rotation_matrix[2][0] as i64 * vector[0] as i64
-            + self.rotation_matrix[2][1] as i64 * vector[1] as i64
-            + self.rotation_matrix[2][2] as i64 * vector[2] as i64;
         self.flag.mac_flag_check(3, sum3);
+
+        sum1 = (sum1 << 20) >> 20;
+        sum2 = (sum2 << 20) >> 20;
+        sum3 = (sum3 << 20) >> 20;
+
+        sum1 += self.rotation_matrix[0][1] as i64 * vector[1] as i64;
+        sum2 += self.rotation_matrix[1][1] as i64 * vector[1] as i64;
+        sum3 += self.rotation_matrix[2][1] as i64 * vector[1] as i64;
+
+        self.flag.mac_flag_check(1, sum1);
+        self.flag.mac_flag_check(2, sum2);
+        self.flag.mac_flag_check(3, sum3);
+
+        sum1 = (sum1 << 20) >> 20;
+        sum2 = (sum2 << 20) >> 20;
+        sum3 = (sum3 << 20) >> 20;
+
+        sum1 += self.rotation_matrix[0][2] as i64 * vector[2] as i64;
+        sum2 += self.rotation_matrix[1][2] as i64 * vector[2] as i64;
+        sum3 += self.rotation_matrix[2][2] as i64 * vector[2] as i64;
+
+        self.flag.mac_flag_check(1, sum1);
+        self.flag.mac_flag_check(2, sum2);
+        self.flag.mac_flag_check(3, sum3);
+
+        self.mac[1] = (sum1 >> (sf as u8 * 12)) as i32;
+        self.mac[2] = (sum2 >> (sf as u8 * 12)) as i32;
         self.mac[3] = (sum3 >> (sf as u8 * 12)) as i32;
+
+        // let sum1 = self.translation_vec[0] as i64 * 0x1000
+        //     + self.rotation_matrix[0][0] as i64 * vector[0] as i64
+        //     + self.rotation_matrix[0][1] as i64 * vector[1] as i64
+        //     + self.rotation_matrix[0][2] as i64 * vector[2] as i64;
+        // self.flag.mac_flag_check(1, sum1);
+        // self.mac[1] = (sum1 >> (sf as u8 * 12)) as i32;
+        //
+        // let sum2 = self.translation_vec[1] as i64 * 0x1000
+        //     + self.rotation_matrix[1][0] as i64 * vector[0] as i64
+        //     + self.rotation_matrix[1][1] as i64 * vector[1] as i64
+        //     + self.rotation_matrix[1][2] as i64 * vector[2] as i64;
+        // self.flag.mac_flag_check(2, sum2);
+        // self.mac[2] = (sum2 >> (sf as u8 * 12)) as i32;
+        //
+        // let sum3 = self.translation_vec[2] as i64 * 0x1000
+        //     + self.rotation_matrix[2][0] as i64 * vector[0] as i64
+        //     + self.rotation_matrix[2][1] as i64 * vector[1] as i64
+        //     + self.rotation_matrix[2][2] as i64 * vector[2] as i64;
+        // self.flag.mac_flag_check(3, sum3);
+        // self.mac[3] = (sum3 >> (sf as u8 * 12)) as i32;
 
         // IR1, IR2, IR3
         self.write_ir(1, self.mac[1], lm);
@@ -746,7 +798,8 @@ impl Gte {
             let u = UNR_LKUP[((d - 0x7FC0) >> 7) as usize] + 0x101;
             d = (0x2000080 - (d * u)) >> 8;
             d = (0x0000080 + (d * u)) >> 8;
-            n = min(0x1FFFF, ((n * d) + 0x8000) >> 16);
+            let val = ((n as u64 * d as u64) + 0x8000) >> 16;
+            n = min(0x1FFFF, val as u32);
             n
         } else {
             self.flag.divide_overflow();
@@ -770,8 +823,11 @@ impl Gte {
         let (sx2, sy2) = self.saturate_scxy(sxp as i32, syp as i32);
         self.scxy_fifo(sx2, sy2);
 
-        // MAC0 Depth
-        let depth = division_result as i64 * self.depth_cue_a as i64 + self.depth_cue_b as i64;
+        division_result as i64
+    }
+
+    fn depth_que(&mut self, division_result: i64) {
+        let depth = division_result * self.depth_cue_a as i64 + self.depth_cue_b as i64;
         self.flag.mac0_flag_check(depth);
         self.mac[0] = depth as i32;
         self.write_ir0((depth >> 12) as i32);
@@ -1222,6 +1278,57 @@ impl Gte {
         self.write_ir(1, self.mac[1], lm);
         self.write_ir(2, self.mac[2], lm);
         self.write_ir(3, self.mac[3], lm);
+    }
+    fn gpf(&mut self, sf: bool, lm: bool) {
+        self.mac[1] = 0;
+        self.mac[2] = 0;
+        self.mac[3] = 0;
+
+        let sum1 = self.intermediates[1] as i64 * self.intermediates[0] as i64;
+        let sum2 = self.intermediates[2] as i64 * self.intermediates[0] as i64;
+        let sum3 = self.intermediates[3] as i64 * self.intermediates[0] as i64;
+
+        self.flag.mac_flag_check(1, sum1);
+        self.flag.mac_flag_check(2, sum2);
+        self.flag.mac_flag_check(3, sum3);
+
+        self.mac[1] = (sum1 >> (sf as u8 * 12)) as i32;
+        self.mac[2] = (sum2 >> (sf as u8 * 12)) as i32;
+        self.mac[3] = (sum3 >> (sf as u8 * 12)) as i32;
+
+        self.write_ir(1, self.mac[1], lm);
+        self.write_ir(2, self.mac[2], lm);
+        self.write_ir(3, self.mac[3], lm);
+
+        self.rgb_fifo();
+    }
+
+    fn gpl(&mut self, sf: bool, lm: bool) {
+        let shift1 = (self.mac[1] as i64) << (sf as u8 * 12);
+        let shift2 = (self.mac[2] as i64) << (sf as u8 * 12);
+        let shift3 = (self.mac[3] as i64) << (sf as u8 * 12);
+
+        self.flag.mac_flag_check(1, shift1);
+        self.flag.mac_flag_check(2, shift2);
+        self.flag.mac_flag_check(3, shift3);
+
+        let sum1 = self.intermediates[1] as i64 * self.intermediates[0] as i64 + shift1;
+        let sum2 = self.intermediates[2] as i64 * self.intermediates[0] as i64 + shift2;
+        let sum3 = self.intermediates[3] as i64 * self.intermediates[0] as i64 + shift3;
+
+        self.flag.mac_flag_check(1, sum1);
+        self.flag.mac_flag_check(2, sum2);
+        self.flag.mac_flag_check(3, sum3);
+
+        self.mac[1] = (sum1 >> (sf as u8 * 12)) as i32;
+        self.mac[2] = (sum2 >> (sf as u8 * 12)) as i32;
+        self.mac[3] = (sum3 >> (sf as u8 * 12)) as i32;
+
+        self.write_ir(1, self.mac[1], lm);
+        self.write_ir(2, self.mac[2], lm);
+        self.write_ir(3, self.mac[3], lm);
+
+        self.rgb_fifo();
     }
 }
 

@@ -70,13 +70,13 @@ impl Bus {
     }
 
     pub fn mem_read_byte(&mut self, addr: u32) -> Result<u8, ExceptionType> {
-        event!(
-            target: "ps1_emulator::BUS",
-            Level::TRACE,
-            "Attempt to read at address: {:08X} (actual address used {:08X})",
-            addr & 0x1FFFFFFF,
-            addr
-        );
+        // event!(
+        //     target: "ps1_emulator::BUS",
+        //     Level::TRACE,
+        //     "Attempt to read at address: {:08X} (actual address used {:08X})",
+        //     addr & 0x1FFFFFFF,
+        //     addr
+        // );
 
         match addr {
             // KUSEG Kernel
@@ -306,7 +306,7 @@ impl Bus {
             _ => {
                 event!(
                     target: "ps1_emulator::BUS",
-                    Level::TRACE,
+                    Level::WARN,
                     "Address {:08X} not implemented yet (read)",
                     addr
                 );
@@ -318,14 +318,14 @@ impl Bus {
     pub fn mem_write_byte(&mut self, addr: u32, val: u8) -> Result<(), ExceptionType> {
         let isc_set = self.cop0.sr.get_isc();
 
-        event!(
-            target: "ps1_emulator::BUS",
-            Level::TRACE,
-            "Attempt to write at address: {:08X} with {:02X}, (actual address used: {:08X}). IsC set: {isc_set}",
-            addr & 0x1FFFFFFF,
-            val,
-            addr
-        );
+        // event!(
+        //     target: "ps1_emulator::BUS",
+        //     Level::TRACE,
+        //     "Attempt to write at address: {:08X} with {:02X}, (actual address used: {:08X}). IsC set: {isc_set}",
+        //     addr & 0x1FFFFFFF,
+        //     val,
+        //     addr
+        // );
 
         // If IsC is set, loads and stores go to data cache and not main memory
         if isc_set {
@@ -706,7 +706,7 @@ impl Bus {
             _ => {
                 event!(
                     target: "ps1_emulator::BUS",
-                    Level::TRACE,
+                    Level::WARN,
                     "Address {:08X} not implemented yet (write with {:02X})",
                     addr,
                     val
